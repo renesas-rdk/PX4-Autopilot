@@ -67,6 +67,9 @@ static constexpr float TEMPERATURE_SENSITIVITY = 333.87f; // LSB/C
 static constexpr float TEMPERATURE_OFFSET = 21.f; // C
 
 enum class Register : uint8_t {
+#if defined(__PX4_FREERTOS)
+	SMPLRT_DIV         = 0x19,
+#endif /* __PX4_FREERTOS */
 
 	CONFIG             = 0x1A,
 	GYRO_CONFIG        = 0x1B,
@@ -119,7 +122,13 @@ enum CONFIG_BIT : uint8_t {
 	FIFO_MODE = Bit6, // when the FIFO is full, additional writes will not be written to FIFO
 
 	// DLPF_CFG[2:0]
+#if defined(__PX4_FREERTOS)
+	DLPF_CFG_MASK              = Bit2 | Bit1 | Bit0, // mask for DLPF_CFG field
+#endif /* __PX4_FREERTOS */
 	DLPF_CFG_Fs_1KHZ          = 1, // Rate 1 kHz,  184 Hz Bandwidth
+#if defined(__PX4_FREERTOS)
+	DLPF_CFG_41HZ              = 3, // Rate 1 kHz,   41 Hz Bandwidth
+#endif /* __PX4_FREERTOS */
 	DLPF_CFG_BYPASS_DLPF_8KHZ = 7, // Rate 8 kHz, 3600 Hz Bandwidth
 };
 
@@ -149,7 +158,13 @@ enum ACCEL_CONFIG2_BIT : uint8_t {
 	ACCEL_FCHOICE_B_BYPASS_DLPF = Bit3,
 
 	// [2:0] A_DLPFCFG
+#if defined(__PX4_FREERTOS)
+	A_DLPFCFG_MASK           = Bit2 | Bit1 | Bit0, // mask for A_DLPFCFG field
+#endif /* __PX4_FREERTOS */
 	A_DLPFCFG_BW_218HZ_DLPF = 1, // Rate 1 kHz, 218.1 Hz Bandwidth (DLPF filter Block)
+#if defined(__PX4_FREERTOS)
+	A_DLPFCFG_BW_44HZ_DLPF  = 3, // Rate 1 kHz,  44.8 Hz Bandwidth
+#endif /* __PX4_FREERTOS */
 };
 
 // FIFO_EN

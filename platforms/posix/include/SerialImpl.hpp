@@ -37,6 +37,9 @@
 #include <unistd.h>
 
 #include <px4_platform_common/SerialCommon.hpp>
+#if defined(__PX4_FREERTOS)
+#include "rzv_fsp/uart_fsp_backend.h"
+#endif /* __PX4_FREERTOS */
 
 using device::SerialConfig::ByteSize;
 using device::SerialConfig::Parity;
@@ -115,6 +118,10 @@ private:
 	bool _swap_rx_tx_mode{false};
 	bool _inverted_mode{false};
 
+#if defined(__PX4_FREERTOS)
+	rzv_uart_backend_t *_backend{nullptr};
+	int _logical{-1};
+#endif
 };
 
 } // namespace device

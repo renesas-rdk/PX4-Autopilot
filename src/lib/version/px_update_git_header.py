@@ -37,12 +37,16 @@ header = """
 
 
 # PX4
+git_describe_cmd = 'git describe --exclude ext/* --always --tags --dirty'
+
 if args.git_tag:
     git_tag = args.git_tag
 else:
-    git_describe_cmd = 'git describe --exclude ext/* --always --tags --dirty'
-    git_tag = subprocess.check_output(git_describe_cmd.split(),
-                                  stderr=subprocess.STDOUT).decode('utf-8').strip()
+    try:
+        git_tag = subprocess.check_output(git_describe_cmd.split(),
+                                          stderr=subprocess.STDOUT).decode('utf-8').strip()
+    except Exception:
+        git_tag = 'v0.0.0'
 
 try:
     # get the tag if we're on a tagged commit
@@ -123,19 +127,27 @@ if (os.path.exists('src/modules/mavlink/mavlink/.git')):
 #define MAVLINK_LIB_GIT_VERSION_STR  "{mavlink_git_version}"
 #define MAVLINK_LIB_GIT_VERSION_BINARY 0x{mavlink_git_version_short}
 """
+else:
+    # Mavlink content committed directly (no .git) — provide a zero fallback
+    header += """
+#define MAVLINK_LIB_GIT_VERSION_STR  ""
+#define MAVLINK_LIB_GIT_VERSION_BINARY 0x0
+"""
 
 
 # NuttX
 if (os.path.exists('platforms/nuttx/NuttX/nuttx/.git')):
     nuttx_git_tags = subprocess.check_output('git -c versionsort.suffix=- tag --sort=v:refname'.split(),
                                   cwd='platforms/nuttx/NuttX/nuttx', stderr=subprocess.STDOUT).decode('utf-8').strip()
-    nuttx_git_tag = re.findall(r'nuttx-[0-9]+\.[0-9]+\.[0-9]+', nuttx_git_tags)[-1].replace("nuttx-", "v")
-    nuttx_git_tag = re.sub('-.*', '.0', nuttx_git_tag)
-    nuttx_git_version = subprocess.check_output('git rev-parse --verify HEAD'.split(),
-                                      cwd='platforms/nuttx/NuttX/nuttx', stderr=subprocess.STDOUT).decode('utf-8').strip()
-    nuttx_git_version_short = nuttx_git_version[0:16]
+    nuttx_tag_matches = re.findall(r'nuttx-[0-9]+\.[0-9]+\.[0-9]+', nuttx_git_tags)
+    if nuttx_tag_matches:
+        nuttx_git_tag = nuttx_tag_matches[-1].replace("nuttx-", "v")
+        nuttx_git_tag = re.sub('-.*', '.0', nuttx_git_tag)
+        nuttx_git_version = subprocess.check_output('git rev-parse --verify HEAD'.split(),
+                                          cwd='platforms/nuttx/NuttX/nuttx', stderr=subprocess.STDOUT).decode('utf-8').strip()
+        nuttx_git_version_short = nuttx_git_version[0:16]
 
-    header += f"""
+        header += f"""
 #define NUTTX_GIT_VERSION_STR  "{nuttx_git_version}"
 #define NUTTX_GIT_VERSION_BINARY 0x{nuttx_git_version_short}
 #define NUTTX_GIT_TAG_STR  "{nuttx_git_tag}"

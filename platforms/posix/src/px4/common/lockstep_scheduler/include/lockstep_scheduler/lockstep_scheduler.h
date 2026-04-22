@@ -34,6 +34,11 @@
 #pragma once
 
 #include <cstdint>
+#if defined(__PX4_FREERTOS)
+#include <sys/errno.h>
+#include <cerrno>
+#include <time.h>
+#endif /* __PX4_FREERTOS */
 #include <mutex>
 #include <vector>
 #include <memory>

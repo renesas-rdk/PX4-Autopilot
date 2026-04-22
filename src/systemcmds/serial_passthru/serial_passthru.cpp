@@ -44,6 +44,9 @@
 #include <px4_platform_common/getopt.h>
 #include <px4_platform_common/module.h>
 #include <px4_platform_common/posix.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/tasks.h>
+#endif /* __PX4_FREERTOS */
 
 static constexpr int TASK_STACK_SIZE   = PX4_STACK_ADJUSTED(1224);
 static constexpr int THREAD_STACK_SIZE = PX4_STACK_ADJUSTED(1224);
@@ -198,6 +201,10 @@ void SERIALPASSTHRU::thread_start()
 	struct sched_param param;
 	(void)pthread_attr_getschedparam(&loop_attr, &param);
 	param.sched_priority = SCHED_PRIORITY_SLOW_DRIVER - 1;
+#if defined(__PX4_FREERTOS)
+	param.sched_priority = px4_task_adjust_priority(param.sched_priority);
+
+#endif /* __PX4_FREERTOS */
 	(void)pthread_attr_setschedparam(&loop_attr, &param);
 
 	pthread_attr_setstacksize(&loop_attr, THREAD_STACK_SIZE);

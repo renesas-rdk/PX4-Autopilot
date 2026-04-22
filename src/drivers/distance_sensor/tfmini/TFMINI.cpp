@@ -79,11 +79,17 @@ TFMINI::init()
 	switch (hw_model) {
 	case 1: // TFMINI (12m, 100 Hz)
 		// Note:
+#if defined(__PX4_FREERTOS)
+		// TFmini Plus has a minimum range of 0.1m.
+		// Original TFmini had 0.3m. We use 0.1m to support Plus.
+		_px4_rangefinder.set_min_distance(0.1f);
+#else
 		// Sensor specification shows 0.3m as minimum, but in practice
 		// 0.3 is too close to minimum so chattering of invalid sensor decision
 		// is happening sometimes. this cause EKF to believe inconsistent range readings.
 		// So we set 0.4 as valid minimum.
 		_px4_rangefinder.set_min_distance(0.4f);
+#endif /* __PX4_FREERTOS */
 		_px4_rangefinder.set_max_distance(12.0f);
 		_px4_rangefinder.set_fov(math::radians(2.3f));
 		break;

@@ -52,6 +52,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <errno.h>
+#if defined(__PX4_FREERTOS)
+#include <limits.h>
+#include <math.h>
+#endif /* __PX4_FREERTOS */
 
 #include <parameters/param.h>
 
@@ -210,25 +214,57 @@ param_import_callback(bson_decoder_t decoder, bson_node_t node)
 
 	switch (node->type) {
 	case BSON_INT32:
+#if defined(__PX4_FREERTOS)
+		i = node->i32;
+		if (param_type(param) == PARAM_TYPE_INT32) {
+			v = &i;
+		} else if (param_type(param) == PARAM_TYPE_FLOAT) {
+			f = (float)i;
+			v = &f;
+		} else {
+#else
 		if (param_type(param) != PARAM_TYPE_INT32) {
+#endif /* __PX4_FREERTOS */
 			PX4_WARN("unexpected type for %s", node->name);
 			result = 1; // just skip this entry
 			goto out;
 		}
+#if !defined(__PX4_FREERTOS)
 
 		i = node->i32;
 		v = &i;
+#endif /* __PX4_FREERTOS */
 		break;
 
 	case BSON_DOUBLE:
+#if defined(__PX4_FREERTOS)
+		if (param_type(param) == PARAM_TYPE_FLOAT) {
+			f = node->d;
+			v = &f;
+		} else if (param_type(param) == PARAM_TYPE_INT32) {
+			int64_t rounded = llround(node->d);
+
+			if (rounded > INT32_MAX) {
+				rounded = INT32_MAX;
+			} else if (rounded < INT32_MIN) {
+				rounded = INT32_MIN;
+			}
+
+			i = (int32_t)rounded;
+			v = &i;
+		} else {
+#else
 		if (param_type(param) != PARAM_TYPE_FLOAT) {
+#endif /* __PX4_FREERTOS */
 			PX4_WARN("unexpected type for %s", node->name);
 			result = 1; // just skip this entry
 			goto out;
 		}
+#if !defined(__PX4_FREERTOS)
 
 		f = node->d;
 		v = &f;
+#endif /* __PX4_FREERTOS */
 		break;
 
 	default:

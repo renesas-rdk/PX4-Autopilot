@@ -51,6 +51,41 @@
 #include <pthread.h>
 #include <drivers/drv_hrt.h>
 #include "work_lock.h"
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#include <time.h>
+#include <FreeRTOS.h>
+#include <semphr.h>
+
+static inline TickType_t work_timeout_to_ticks(uint32_t timeout_us)
+{
+	if (timeout_us == 0) {
+		timeout_us = 1;
+	}
+
+	uint64_t ticks64 = ((uint64_t)timeout_us * configTICK_RATE_HZ + 1000000ULL - 1ULL) / 1000000ULL;
+
+	if (ticks64 == 0) {
+		ticks64 = 1;
+	}
+
+	TickType_t max_block = portMAX_DELAY;
+
+#if (INCLUDE_vTaskSuspend == 1)
+	if (max_block > 0) {
+		--max_block;
+	}
+#endif
+
+	if ((max_block > 0) && (ticks64 > (uint64_t)max_block)) {
+		ticks64 = max_block;
+	} else if (ticks64 > (uint64_t)portMAX_DELAY) {
+		ticks64 = portMAX_DELAY;
+	}
+
+	return (TickType_t)ticks64;
+}
+#endif /* __PX4_FREERTOS */
 
 #ifdef CONFIG_SCHED_WORKQUEUE
 
@@ -77,6 +112,18 @@ px4_sem_t _work_lock[NWORKERS];
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+#if defined(__PX4_FREERTOS)
+static void work_wait(struct wqueue_s *wqueue, uint32_t timeout_us)
+{
+	TickType_t wait_ticks = work_timeout_to_ticks(timeout_us);
+
+	if (wait_ticks == 0) {
+		wait_ticks = 1;
+	}
+
+	(void)xSemaphoreTake(wqueue->wait_sem.handle, wait_ticks);
+}
+#endif
 
 /****************************************************************************
  * Name: work_process
@@ -191,7 +238,11 @@ static void work_process(struct wqueue_s *wqueue, int lock_id)
 	 */
 	work_unlock(lock_id);
 
+#if defined(__PX4_FREERTOS)
+	work_wait(wqueue, next);
+#else
 	px4_usleep(next);
+#endif /* __PX4_FREERTOS */
 }
 
 /****************************************************************************
@@ -204,12 +255,28 @@ void work_queues_init(void)
 #ifdef CONFIG_SCHED_USRWORK
 	px4_sem_init(&_work_lock[USRWORK], 0, 1);
 #endif
+#if defined(__PX4_FREERTOS)
+	dq_init(&g_work[HPWORK].q);
+	px4_sem_init(&g_work[HPWORK].wait_sem, 0, 0);
+
+	dq_init(&g_work[LPWORK].q);
+	px4_sem_init(&g_work[LPWORK].wait_sem, 0, 0);
+
+#ifdef CONFIG_SCHED_USRWORK
+	dq_init(&g_work[USRWORK].q);
+	px4_sem_init(&g_work[USRWORK].wait_sem, 0, 0);
+#endif
+#endif
 
 	// Create high priority worker thread
 	g_work[HPWORK].pid = px4_task_spawn_cmd("hpwork",
 						SCHED_DEFAULT,
 						SCHED_PRIORITY_MAX - 1,
+#if defined(__PX4_FREERTOS)
+						2000 * 4,
+#else
 						2000,
+#endif /* __PX4_FREERTOS */
 						work_hpthread,
 						(char *const *)NULL);
 
@@ -217,7 +284,11 @@ void work_queues_init(void)
 	g_work[LPWORK].pid = px4_task_spawn_cmd("lpwork",
 						SCHED_DEFAULT,
 						SCHED_PRIORITY_MIN,
+#if defined(__PX4_FREERTOS)
+						2000 * 4,
+#else
 						2000,
+#endif /* __PX4_FREERTOS */
 						work_lpthread,
 						(char *const *)NULL);
 

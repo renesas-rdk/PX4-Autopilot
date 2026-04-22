@@ -108,7 +108,17 @@ public:
 	 * @param buflen	The number of bytes to be read.
 	 * @return		The number of bytes read or -errno otherwise.
 	 */
+#if defined(__PX4_FREERTOS)
+	virtual ssize_t	read(file_t *filep, char *buffer, size_t buflen)
+	{
+		(void)filep;
+		(void)buffer;
+		(void)buflen;
+		return -ENOSYS;
+	}
+#else
 	virtual ssize_t	read(file_t *filep, char *buffer, size_t buflen) { return -ENOSYS; }
+#endif /* __PX4_FREERTOS */
 
 	/**
 	 * Perform a write to the device.
@@ -120,7 +130,17 @@ public:
 	 * @param buflen	The number of bytes to be written.
 	 * @return		The number of bytes written or -errno otherwise.
 	 */
+#if defined(__PX4_FREERTOS)
+	virtual ssize_t	write(file_t *filep, const char *buffer, size_t buflen)
+	{
+		(void)filep;
+		(void)buffer;
+		(void)buflen;
+		return -ENOSYS;
+	}
+#else
 	virtual ssize_t	write(file_t *filep, const char *buffer, size_t buflen) { return -ENOSYS; }
+#endif /* __PX4_FREERTOS */
 
 	/**
 	 * Perform a logical seek operation on the device.
@@ -132,7 +152,17 @@ public:
 	 * @param whence	SEEK_OFS, SEEK_CUR or SEEK_END.
 	 * @return		The previous offset, or -errno otherwise.
 	 */
+#if defined(__PX4_FREERTOS)
+	virtual off_t	seek(file_t *filep, off_t offset, int whence)
+	{
+		(void)filep;
+		(void)offset;
+		(void)whence;
+		return -ENOSYS;
+	}
+#else
 	virtual off_t	seek(file_t *filep, off_t offset, int whence) { return -ENOSYS; }
+#endif /* __PX4_FREERTOS */
 
 	/**
 	 * Perform an ioctl operation on the device.
@@ -146,7 +176,17 @@ public:
 	 * @param arg		The ioctl argument value.
 	 * @return		OK on success, or -errno otherwise.
 	 */
+#if defined(__PX4_FREERTOS)
+	virtual int	ioctl(file_t *filep, int cmd, unsigned long arg)
+	{
+		(void)filep;
+		(void)cmd;
+		(void)arg;
+		return -ENOTTY;
+	};
+#else
 	virtual int	ioctl(file_t *filep, int cmd, unsigned long arg) { return -ENOTTY; };
+#endif /* __PX4_FREERTOS */
 
 	/**
 	 * Perform a poll setup/teardown operation.
@@ -187,7 +227,15 @@ protected:
 	 * @param filep		The file that's interested.
 	 * @return		The current set of poll events.
 	 */
+#if defined(__PX4_FREERTOS)
+	virtual px4_pollevent_t poll_state(file_t *filep)
+	{
+		(void)filep;
+		return 0;
+	}
+#else
 	virtual px4_pollevent_t poll_state(file_t *filep) { return 0; }
+#endif /* __PX4_FREERTOS */
 
 	/**
 	 * Report new poll events.
@@ -218,7 +266,15 @@ protected:
 	 * @param filep		Pointer to the NuttX file structure.
 	 * @return		OK if the open should proceed, -errno otherwise.
 	 */
+#if defined(__PX4_FREERTOS)
+	virtual int	open_first(file_t *filep)
+	{
+		(void)filep;
+		return PX4_OK;
+	}
+#else
 	virtual int	open_first(file_t *filep) { return PX4_OK; }
+#endif /* __PX4_FREERTOS */
 
 	/**
 	 * Notification of the last close.
@@ -231,7 +287,15 @@ protected:
 	 * @param filep		Pointer to the NuttX file structure.
 	 * @return		OK if the open should return OK, -errno otherwise.
 	 */
+#if defined(__PX4_FREERTOS)
+	virtual int	close_last(file_t *filep)
+	{
+		(void)filep;
+		return PX4_OK;
+	}
+#else
 	virtual int	close_last(file_t *filep) { return PX4_OK; }
+#endif /* __PX4_FREERTOS */
 
 	/**
 	 * Register a class device name, automatically adding device

@@ -34,6 +34,9 @@
 #include "util.h"
 
 #include <dirent.h>
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#endif /* __PX4_FREERTOS */
 #include <sys/stat.h>
 #include <string.h>
 #include <stdlib.h>
@@ -116,6 +119,9 @@ int check_free_space(const char *log_root_dir, int32_t max_log_dirs_to_keep, orb
 		     int &sess_dir_index)
 {
 	struct statfs statfs_buf;
+#if defined(__PX4_FREERTOS)
+	sess_dir_index = 0;
+#endif /* __PX4_FREERTOS */
 
 	if (max_log_dirs_to_keep == 0) {
 		max_log_dirs_to_keep = INT32_MAX;
@@ -124,6 +130,11 @@ int check_free_space(const char *log_root_dir, int32_t max_log_dirs_to_keep, orb
 	// remove old logs if the free space falls below a threshold
 	do {
 		if (statfs(log_root_dir, &statfs_buf) != 0) {
+#if defined(__PX4_FREERTOS)
+			if ((errno == ENOSYS) || (errno == ENOTSUP)) {
+				return PX4_OK;
+			}
+#endif /* __PX4_FREERTOS */
 			return PX4_ERROR;
 		}
 

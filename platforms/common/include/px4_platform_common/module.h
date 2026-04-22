@@ -38,6 +38,9 @@
 #pragma once
 
 #include <pthread.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/posix.h>
+#endif /* __PX4_FREERTOS */
 #include <unistd.h>
 #include <stdbool.h>
 

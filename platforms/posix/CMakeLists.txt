@@ -15,181 +15,234 @@ px4_posix_generate_builtin_commands(
 	OUT apps
 	MODULE_LIST ${module_libraries})
 
-px4_posix_generate_alias(
-	OUT ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/px4-alias.sh
-	MODULE_LIST ${module_libraries}
-	PREFIX ${PX4_SHELL_COMMAND_PREFIX}
-)
-
-if (CMAKE_BUILD_TYPE STREQUAL FuzzTesting)
-	add_executable(px4
-		src/px4/common/main_fuzztesting.cpp
-		apps.cpp
-		)
-else()
-	add_definitions(-DPX4_SOURCE_DIR="${PX4_SOURCE_DIR}" -DPX4_BINARY_DIR="${PX4_BINARY_DIR}")
-
-	add_executable(px4
-		src/px4/common/main.cpp
-		apps.cpp
-		)
-endif()
-
-target_link_libraries(px4
-	PRIVATE
-		${module_libraries}
-		m
-		parameters
-)
-
-if((NOT APPLE) AND (NOT ANDROID))
-	target_link_libraries(px4 PRIVATE rt)
-endif()
-
-if(NOT ANDROID)
-	target_link_libraries(px4 PRIVATE pthread)
-endif()
-
-target_link_libraries(px4 PRIVATE uORB)
-
-if (CMAKE_BUILD_TYPE STREQUAL FuzzTesting)
-	target_include_directories(px4 PRIVATE SYSTEM "${CMAKE_BINARY_DIR}/mavlink}")
-	target_compile_options(px4 PRIVATE "-Wno-cast-align")
-endif()
-
-#=============================================================================
-# install
-#
-
-# TODO: extend to snapdragon
-
-# px4 dirs
-install(
-	DIRECTORY
-		${PROJECT_SOURCE_DIR}/posix-configs
-		${PROJECT_SOURCE_DIR}/test
-		${CMAKE_BINARY_DIR}/etc
-		${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
-	DESTINATION
-		${PROJECT_NAME}
-	USE_SOURCE_PERMISSIONS
-)
-
-# Module Symlinks
-px4_posix_generate_symlinks(
-	MODULE_LIST ${module_libraries}
-	PREFIX ${PX4_SHELL_COMMAND_PREFIX}
-	TARGET px4
-)
-
 if(config_romfs_root)
 	add_subdirectory(${PX4_SOURCE_DIR}/ROMFS ${PX4_BINARY_DIR}/ROMFS)
-	add_dependencies(px4 romfs_gen_files_target)
 endif()
 
+if(PX4_BUILD_LIB_ONLY)
+	add_definitions(-DPX4_SOURCE_DIR="${PX4_SOURCE_DIR}" -DPX4_BINARY_DIR="${PX4_BINARY_DIR}")
 
-# board defined upload helper
-if(EXISTS "${PX4_BOARD_DIR}/cmake/upload.cmake")
-	include(${PX4_BOARD_DIR}/cmake/upload.cmake)
-endif()
+	add_library(px4_builtins STATIC apps.cpp)
+	px4_register_archive(px4_builtins)
 
-# board defined link libraries
-if(EXISTS "${PX4_BOARD_DIR}/cmake/link_libraries.cmake")
-	include(${PX4_BOARD_DIR}/cmake/link_libraries.cmake)
-endif()
-
-if("${PX4_BOARD}" MATCHES "beaglebone_blue")
-	target_link_libraries(px4 PRIVATE robotics_cape)
-
-elseif("${PX4_BOARD}" MATCHES "emlid_navio2")
-	target_link_libraries(px4 PRIVATE atomic)
-
-	# vscode launch.json
-	configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/launch_rpi.json.in ${PX4_SOURCE_DIR}/.vscode/launch.json COPYONLY)
-
-elseif("${PX4_BOARD}" MATCHES "sitl")
-
-	# vscode launch.json
-	if(${PX4_BOARD_LABEL} MATCHES "replay")
-		configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/launch_replay.json.in ${PX4_SOURCE_DIR}/.vscode/launch.json COPYONLY)
-
+	get_property(px4_archives GLOBAL PROPERTY PX4_LIBPX4_ARCHIVES)
+	if(px4_archives)
+		list(REMOVE_DUPLICATES px4_archives)
 	else()
-		configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/launch_sitl.json.in ${PX4_SOURCE_DIR}/.vscode/launch.json COPYONLY)
+		message(FATAL_ERROR "PX4_BUILD_LIB_ONLY requires registered static archives")
 	endif()
 
-	set(SITL_WORKING_DIR ${PX4_BINARY_DIR}/rootfs)
-	file(MAKE_DIRECTORY ${SITL_WORKING_DIR})
-	configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/posix.lldbinit ${SITL_WORKING_DIR}/.lldbinit COPYONLY)
-	configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/posix.gdbinit ${SITL_WORKING_DIR}/.gdbinit COPYONLY)
+	set(libpx4_output ${PX4_BINARY_DIR}/libpx4.a)
 
-	if(BUILD_TESTING)
-		include(sitl_tests)
-	endif()
-
-	# "none" legacy SITL helper target
-	add_custom_target(none
-		COMMAND $<TARGET_FILE:px4>
-		WORKING_DIRECTORY ${SITL_WORKING_DIR}
-		USES_TERMINAL
-		DEPENDS px4
+	set(bundle_command
+		${PYTHON_EXECUTABLE} ${PX4_SOURCE_DIR}/Tools/px4_bundle_static_lib.py
+		--output=${libpx4_output}
+		--ar=${CMAKE_AR}
 	)
 
+	if(CMAKE_RANLIB AND NOT CMAKE_RANLIB STREQUAL "CMAKE_RANLIB-NOTFOUND")
+		list(APPEND bundle_command --ranlib=${CMAKE_RANLIB})
+	endif()
+
+	foreach(archive_target ${px4_archives})
+		list(APPEND bundle_command $<TARGET_FILE:${archive_target}>)
+	endforeach()
+
+	add_custom_command(
+		OUTPUT ${libpx4_output}
+		COMMAND ${bundle_command}
+		DEPENDS ${px4_archives} ${PX4_SOURCE_DIR}/Tools/px4_bundle_static_lib.py
+		COMMENT "Bundling libpx4.a"
+		VERBATIM
+	)
+
+	add_custom_target(px4_lib ALL DEPENDS ${libpx4_output})
+	if(TARGET romfs_gen_files_target)
+		add_dependencies(px4_lib romfs_gen_files_target)
+	endif()
+
+	add_library(px4 STATIC IMPORTED GLOBAL)
+	set_target_properties(px4 PROPERTIES IMPORTED_LOCATION ${libpx4_output})
+	add_dependencies(px4 px4_lib)
+
+else()
+	px4_posix_generate_alias(
+		OUT ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/px4-alias.sh
+		MODULE_LIST ${module_libraries}
+		PREFIX ${PX4_SHELL_COMMAND_PREFIX}
+	)
+
+	if (CMAKE_BUILD_TYPE STREQUAL FuzzTesting)
+		add_executable(px4
+			src/px4/common/main_fuzztesting.cpp
+			apps.cpp
+			)
+	else()
+		add_definitions(-DPX4_SOURCE_DIR="${PX4_SOURCE_DIR}" -DPX4_BINARY_DIR="${PX4_BINARY_DIR}")
+
+		add_executable(px4
+			src/px4/common/main.cpp
+			apps.cpp
+			)
+	endif()
+
+	target_link_libraries(px4
+		PRIVATE
+			${module_libraries}
+			m
+			parameters
+	)
+
+	# Link rt and pthread libraries only on Linux/POSIX systems (not FreeRTOS bare-metal)
+	# Exclude renesas_rzv board which uses FreeRTOS without librt/libpthread
+	if((NOT APPLE) AND (NOT ANDROID) AND (NOT "${PX4_BOARD}" MATCHES "renesas_rzv"))
+		target_link_libraries(px4 PRIVATE rt)
+	endif()
+
+	if((NOT ANDROID) AND (NOT "${PX4_BOARD}" MATCHES "renesas_rzv"))
+		target_link_libraries(px4 PRIVATE pthread)
+	endif()
+
+	target_link_libraries(px4 PRIVATE uORB)
+
+	if (CMAKE_BUILD_TYPE STREQUAL FuzzTesting)
+		target_include_directories(px4 PRIVATE SYSTEM "${CMAKE_BINARY_DIR}/mavlink}")
+		target_compile_options(px4 PRIVATE "-Wno-cast-align")
+	endif()
+
+	#=============================================================================
 	# install
+	#
+
+	# TODO: extend to snapdragon
 
 	# px4 dirs
 	install(
 		DIRECTORY
-			${PROJECT_SOURCE_DIR}/integrationtests
-			${PROJECT_SOURCE_DIR}/launch
+			${PROJECT_SOURCE_DIR}/posix-configs
+			${PROJECT_SOURCE_DIR}/test
+			${CMAKE_BINARY_DIR}/etc
 			${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
 		DESTINATION
 			${PROJECT_NAME}
 		USE_SOURCE_PERMISSIONS
+	)
+
+	# Module Symlinks
+	px4_posix_generate_symlinks(
+		MODULE_LIST ${module_libraries}
+		PREFIX ${PX4_SHELL_COMMAND_PREFIX}
+		TARGET px4
+	)
+
+	if(config_romfs_root)
+		add_dependencies(px4 romfs_gen_files_target)
+	endif()
+
+	# board defined upload helper
+	if(EXISTS "${PX4_BOARD_DIR}/cmake/upload.cmake")
+		include(${PX4_BOARD_DIR}/cmake/upload.cmake)
+	endif()
+
+	# board defined link libraries
+	if(EXISTS "${PX4_BOARD_DIR}/cmake/link_libraries.cmake")
+		include(${PX4_BOARD_DIR}/cmake/link_libraries.cmake)
+	endif()
+
+	if("${PX4_BOARD}" MATCHES "beaglebone_blue")
+		target_link_libraries(px4 PRIVATE robotics_cape)
+
+	elseif("${PX4_BOARD}" MATCHES "emlid_navio2")
+		target_link_libraries(px4 PRIVATE atomic)
+
+		# vscode launch.json
+		configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/launch_rpi.json.in ${PX4_SOURCE_DIR}/.vscode/launch.json COPYONLY)
+
+	elseif("${PX4_BOARD}" MATCHES "sitl")
+
+		# vscode launch.json
+		if(${PX4_BOARD_LABEL} MATCHES "replay")
+			configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/launch_replay.json.in ${PX4_SOURCE_DIR}/.vscode/launch.json COPYONLY)
+
+		else()
+			configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/launch_sitl.json.in ${PX4_SOURCE_DIR}/.vscode/launch.json COPYONLY)
+		endif()
+
+		set(SITL_WORKING_DIR ${PX4_BINARY_DIR}/rootfs)
+		file(MAKE_DIRECTORY ${SITL_WORKING_DIR})
+		configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/posix.lldbinit ${SITL_WORKING_DIR}/.lldbinit COPYONLY)
+		configure_file(${CMAKE_CURRENT_SOURCE_DIR}/Debug/posix.gdbinit ${SITL_WORKING_DIR}/.gdbinit COPYONLY)
+
+		if(BUILD_TESTING)
+			include(sitl_tests)
+		endif()
+
+		# "none" legacy SITL helper target
+		add_custom_target(none
+			COMMAND $<TARGET_FILE:px4>
+			WORKING_DIRECTORY ${SITL_WORKING_DIR}
+			USES_TERMINAL
+			DEPENDS px4
 		)
 
-	# px4 files
-	install(
-		FILES
-			${PROJECT_SOURCE_DIR}/CMakeLists.txt
-			${PROJECT_SOURCE_DIR}/package.xml
-		DESTINATION
-			${PROJECT_NAME}
-		)
+		# install
 
-	# px4 Tools dirs
-	install(
-		DIRECTORY
-			${PROJECT_SOURCE_DIR}/Tools/ecl_ekf
-		DESTINATION
-			${PROJECT_NAME}/Tools
-		USE_SOURCE_PERMISSIONS
-		)
+		# px4 dirs
+		install(
+			DIRECTORY
+				${PROJECT_SOURCE_DIR}/integrationtests
+				${PROJECT_SOURCE_DIR}/launch
+				${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+			DESTINATION
+				${PROJECT_NAME}
+			USE_SOURCE_PERMISSIONS
+			)
 
-	# px4 Tools files
-	install(
-		PROGRAMS
-			${PROJECT_SOURCE_DIR}/Tools/simulation/gazebo-classic/setup_gazebo.bash
-			${PROJECT_SOURCE_DIR}/Tools/upload_log.py
-		DESTINATION
-			${PROJECT_NAME}/Tools
-		)
+		# px4 files
+		install(
+			FILES
+				${PROJECT_SOURCE_DIR}/CMakeLists.txt
+				${PROJECT_SOURCE_DIR}/package.xml
+			DESTINATION
+				${PROJECT_NAME}
+			)
 
-	# ROMFS files
-	install(
-		DIRECTORY
-			${PX4_BINARY_DIR}/etc
-		DESTINATION
-			${PROJECT_NAME}/build/px4_sitl_default
-		)
+		# px4 Tools dirs
+		install(
+			DIRECTORY
+				${PROJECT_SOURCE_DIR}/Tools/ecl_ekf
+			DESTINATION
+				${PROJECT_NAME}/Tools
+			USE_SOURCE_PERMISSIONS
+			)
 
-	# gazebo dirs
-	install(
-		DIRECTORY
-			${PROJECT_SOURCE_DIR}/Tools/simulation/gz/models
-			${PROJECT_SOURCE_DIR}/Tools/simulation/gz/worlds
-		DESTINATION
-			${PROJECT_NAME}/Tools/simulation/gazebo-classic/sitl_gazebo-classic
-		OPTIONAL
-		)
+		# px4 Tools files
+		install(
+			PROGRAMS
+				${PROJECT_SOURCE_DIR}/Tools/simulation/gazebo-classic/setup_gazebo.bash
+				${PROJECT_SOURCE_DIR}/Tools/upload_log.py
+			DESTINATION
+				${PROJECT_NAME}/Tools
+			)
+
+		# ROMFS files
+		install(
+			DIRECTORY
+				${PX4_BINARY_DIR}/etc
+			DESTINATION
+				${PROJECT_NAME}/build/px4_sitl_default
+			)
+
+		# gazebo dirs
+		install(
+			DIRECTORY
+				${PROJECT_SOURCE_DIR}/Tools/simulation/gz/models
+				${PROJECT_SOURCE_DIR}/Tools/simulation/gz/worlds
+			DESTINATION
+				${PROJECT_NAME}/Tools/simulation/gazebo-classic/sitl_gazebo-classic
+			OPTIONAL
+			)
+
+	endif()
 
 endif()

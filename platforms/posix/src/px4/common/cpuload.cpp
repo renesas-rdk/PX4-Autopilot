@@ -45,7 +45,9 @@
 
 #include <drivers/drv_hrt.h>
 
+#if !defined(__PX4_FREERTOS)
 #include <sys/time.h>
+#endif /* __PX4_FREERTOS */
 
 static px4::atomic_int cpuload_monitor_all_count{0};
 

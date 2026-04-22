@@ -62,6 +62,11 @@ function(px4_add_git_submodule)
 		REQUIRED TARGET PATH
 		ARGN ${ARGN})
 
+	if(PX4_BUILD_LIB_ONLY AND NOT EXISTS ${PX4_SOURCE_DIR}/.git)
+		add_custom_target(${TARGET})
+		return()
+	endif()
+
 	set(REL_PATH)
 
 	if(IS_ABSOLUTE ${PATH})
@@ -78,14 +83,22 @@ function(px4_add_git_submodule)
 	string(REPLACE "/" "_" NAME ${PATH})
 	string(REPLACE "." "_" NAME ${NAME})
 
-	add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
-		COMMAND Tools/check_submodules.sh ${REL_PATH}
-		COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
-		DEPENDS ${PX4_SOURCE_DIR}/.gitmodules ${PATH}/.git
-		COMMENT "git submodule ${REL_PATH}"
-		WORKING_DIRECTORY ${PX4_SOURCE_DIR}
-		USES_TERMINAL
-		)
+	if(EXISTS "${PATH}/.git")
+		add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
+			COMMAND Tools/check_submodules.sh ${REL_PATH}
+			COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
+			DEPENDS ${PX4_SOURCE_DIR}/.gitmodules ${PATH}/.git
+			COMMENT "git submodule ${REL_PATH}"
+			WORKING_DIRECTORY ${PX4_SOURCE_DIR}
+			USES_TERMINAL
+			)
+	else()
+		# Submodule content committed directly (no .git) — just create the stamp
+		add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
+			COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/git_init_${NAME}.stamp
+			COMMENT "git submodule ${REL_PATH} (content committed directly)"
+			)
+	endif()
 
 	add_custom_target(${TARGET} DEPENDS git_init_${NAME}.stamp)
 endfunction()

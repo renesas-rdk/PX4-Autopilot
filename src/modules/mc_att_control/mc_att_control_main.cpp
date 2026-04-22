@@ -249,6 +249,18 @@ MulticopterAttitudeControl::Run()
 
 		const Quatf q{v_att.q};
 
+#if defined(__PX4_FREERTOS)
+		const bool q_valid = PX4_ISFINITE(q(0)) && PX4_ISFINITE(q(1))
+				      && PX4_ISFINITE(q(2)) && PX4_ISFINITE(q(3))
+				      && (fabsf(q.norm() - 1.f) < 0.1f);
+
+		if (!q_valid) {
+			PX4_DEBUG("mc_att_ctrl: invalid EKF2 quaternion [%.3f %.3f %.3f %.3f] norm=%.3f — skipping",
+				  (double)q(0), (double)q(1), (double)q(2), (double)q(3), (double)q.norm());
+			return;
+		}
+#endif // __PX4_FREERTOS
+
 		/* check for updates in other topics */
 		_manual_control_setpoint_sub.update(&_manual_control_setpoint);
 		_vehicle_control_mode_sub.update(&_vehicle_control_mode);

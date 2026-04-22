@@ -65,6 +65,10 @@
 #include <px4_platform_common/tasks.h>
 #include <px4_platform_common/time.h>
 #include <systemlib/mavlink_log.h>
+#if defined(__PX4_FREERTOS)
+#include <parameters/param.h>
+extern "C" int rzv_remote_system_reboot(void);
+#endif /* __PX4_FREERTOS */
 
 #include <math.h>
 #include <float.h>
@@ -1221,16 +1225,42 @@ Commander::handle_command(const vehicle_command_s &cmd)
 		cmd_result = handleCommandActuatorTest(cmd);
 		break;
 
+#if defined(__PX4_FREERTOS)
+	case vehicle_command_s::VEHICLE_CMD_DO_MOTOR_TEST:
+		cmd_result = handleCommandMotorTest(cmd);
+		break;
+#endif /* __PX4_FREERTOS */
 	case vehicle_command_s::VEHICLE_CMD_PREFLIGHT_REBOOT_SHUTDOWN: {
 
+#if defined(__PX4_FREERTOS)
+			const int param1 = static_cast<int>(roundf(cmd.param1));
+			const int param2 = static_cast<int>(roundf(cmd.param2));
+#else
 			const int param1 = cmd.param1;
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+			if ((param1 == 0) && (param2 == 0)) {
+#else
 			if (param1 == 0) {
+#endif /* __PX4_FREERTOS */
 				// 0: Do nothing for autopilot
 				answer_command(cmd, vehicle_command_ack_s::VEHICLE_CMD_RESULT_ACCEPTED);
 
-#if defined(CONFIG_BOARDCTL_RESET)
+#if defined(__PX4_FREERTOS)
+			} else if ((param1 == 1 || param2 == 1) && !isArmed()) {
+				answer_command(cmd, vehicle_command_ack_s::VEHICLE_CMD_RESULT_ACCEPTED);
 
+				param_save_default(true);
+
+				px4_usleep(2000000); // 2s hold: covers SiK max latency (~1921ms)
+
+				rzv_remote_system_reboot(); // CA55 reboots entire system (CR8 + CA55)
+				px4_usleep(5000000);        // safety wait while reboot propagates
+
+				while (1) { px4_usleep(1); }
+
+#if defined(CONFIG_BOARDCTL_RESET)
 			} else if ((param1 == 1) && !isArmed() && (px4_reboot_request(REBOOT_REQUEST, 400_ms) == 0)) {
 				// 1: Reboot autopilot
 				answer_command(cmd, vehicle_command_ack_s::VEHICLE_CMD_RESULT_ACCEPTED);
@@ -1238,6 +1268,7 @@ Commander::handle_command(const vehicle_command_s &cmd)
 				while (1) { px4_usleep(1); }
 
 #endif // CONFIG_BOARDCTL_RESET
+#endif /* __PX4_FREERTOS */
 
 #if defined(BOARD_HAS_POWER_CONTROL)
 
@@ -1606,7 +1637,17 @@ unsigned Commander::handleCommandActuatorTest(const vehicle_command_s &cmd)
 		actuator_test.function -= 1000;
 	}
 
+#if defined(__PX4_FREERTOS)
+	float value = cmd.param1;
+
+	if (PX4_ISFINITE(value) && value > 1.0f) {
+		value *= 0.01f;
+	}
+
+	actuator_test.value = value;
+#else
 	actuator_test.value = cmd.param1;
+#endif /* __PX4_FREERTOS */
 
 	actuator_test.action = actuator_test_s::ACTION_DO_CONTROL;
 	int timeout_ms = (int)(cmd.param2 * 1000.f + 0.5f);
@@ -1623,9 +1664,99 @@ unsigned Commander::handleCommandActuatorTest(const vehicle_command_s &cmd)
 		actuator_test.timeout_ms = 3000;
 	}
 
+#if defined(__PX4_FREERTOS)
+	PX4_DEBUG("ACTUATOR_TEST: func=%d raw=%.3f scaled=%.3f action=%d timeout=%d",
+		  actuator_test.function, (double)cmd.param1, (double)value,
+		  actuator_test.action, actuator_test.timeout_ms);
+
+#endif /* __PX4_FREERTOS */
 	_actuator_test_pub.publish(actuator_test);
 	return vehicle_command_ack_s::VEHICLE_CMD_RESULT_ACCEPTED;
 }
+#if defined(__PX4_FREERTOS)
+unsigned Commander::handleCommandMotorTest(const vehicle_command_s &cmd)
+{
+	if (isArmed() || (_safety.isButtonAvailable() && !_safety.isSafetyOff())) {
+		return vehicle_command_ack_s::VEHICLE_CMD_RESULT_DENIED;
+	}
+
+	if (_param_com_mot_test_en.get() != 1) {
+		return vehicle_command_ack_s::VEHICLE_CMD_RESULT_DENIED;
+	}
+
+	static constexpr int MAV_MOTOR_TEST_THROTTLE_TYPE_PERCENT = 0;
+	static constexpr int MAV_MOTOR_TEST_THROTTLE_TYPE_PWM = 1;
+
+	const int motor_instance = (int)(cmd.param1 + 0.5f);
+
+	if (motor_instance < 1 || motor_instance > actuator_test_s::MAX_NUM_MOTORS) {
+		return vehicle_command_ack_s::VEHICLE_CMD_RESULT_UNSUPPORTED;
+	}
+
+	const int throttle_type = (int)(cmd.param2 + 0.5f);
+
+	if (throttle_type != MAV_MOTOR_TEST_THROTTLE_TYPE_PERCENT && throttle_type != MAV_MOTOR_TEST_THROTTLE_TYPE_PWM) {
+		return vehicle_command_ack_s::VEHICLE_CMD_RESULT_UNSUPPORTED;
+	}
+
+	const float throttle_raw = PX4_ISFINITE(cmd.param3) ? cmd.param3 : NAN;
+
+	if (!PX4_ISFINITE(throttle_raw)) {
+		return vehicle_command_ack_s::VEHICLE_CMD_RESULT_UNSUPPORTED;
+	}
+
+	actuator_test_s actuator_test{};
+	actuator_test.timestamp = hrt_absolute_time();
+	actuator_test.function = actuator_test_s::FUNCTION_MOTOR1 + (motor_instance - 1);
+
+	int timeout_ms = (int)(cmd.param4 * 1000.f + 0.5f);
+	bool unlimited = timeout_ms <= 0;
+
+	// enforce timeout upper bound
+	if (timeout_ms > 3000) {
+		timeout_ms = 3000;
+	}
+
+	const float value_raw = throttle_raw;
+	float value = throttle_raw;
+
+	const bool release_control = !PX4_ISFINITE(value_raw) || (value_raw <= 0.f && timeout_ms <= 0);
+
+	if (throttle_type == MAV_MOTOR_TEST_THROTTLE_TYPE_PERCENT) {
+		// Accept both 0..1 and 0..100 inputs.
+		// Use >= 1.f to safely handle QGC sending 1.0 for 1% (preventing 100% motor spin).
+		if (value >= 1.f) {
+			value *= 0.01f;
+		}
+
+		value = math::constrain(value, 0.f, 1.f);
+
+	} else if (throttle_type == MAV_MOTOR_TEST_THROTTLE_TYPE_PWM) {
+		const float pwm_min = 1000.f;
+		const float pwm_max = 2000.f;
+		value = (value - pwm_min) / (pwm_max - pwm_min);
+		value = math::constrain(value, 0.f, 1.f);
+	}
+
+	if (release_control) {
+		actuator_test.action = actuator_test_s::ACTION_RELEASE_CONTROL;
+		actuator_test.value = NAN;
+		actuator_test.timeout_ms = 0;
+
+	} else {
+		actuator_test.action = actuator_test_s::ACTION_DO_CONTROL;
+		actuator_test.value = value;
+		actuator_test.timeout_ms = unlimited ? 0 : timeout_ms;
+	}
+
+	_actuator_test_pub.publish(actuator_test);
+	PX4_INFO("Motor test cmd: motor=%d type=%d value=%.2f timeout_ms=%u",
+		 motor_instance, throttle_type, (double)value,
+		 (unsigned)actuator_test.timeout_ms);
+
+	return vehicle_command_ack_s::VEHICLE_CMD_RESULT_ACCEPTED;
+}
+#endif
 
 void Commander::executeActionRequest(const action_request_s &action_request)
 {

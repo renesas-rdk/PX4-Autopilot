@@ -465,9 +465,25 @@ __BEGIN_DECLS
 #if defined(RC_SERIAL_SINGLEWIRE)
 static inline bool board_rc_singlewire(const char *device) { return strcmp(device, RC_SERIAL_PORT) == 0; }
 #elif defined(RC_SERIAL_SINGLEWIRE_FORCE)
+#if defined(__PX4_FREERTOS)
+static inline bool board_rc_singlewire(const char *device)
+{
+	(void)device;
+	return true;
+}
+#else
 static inline bool board_rc_singlewire(const char *device) { return true; }
+#endif /* __PX4_FREERTOS */
+#else
+#if defined(__PX4_FREERTOS)
+static inline bool board_rc_singlewire(const char *device)
+{
+	(void)device;
+	return false;
+}
 #else
 static inline bool board_rc_singlewire(const char *device) { return false; }
+#endif /* __PX4_FREERTOS */
 #endif
 
 /************************************************************************************
@@ -498,7 +514,15 @@ static inline bool board_rc_singlewire(const char *device) { return false; }
 #if defined(RC_SERIAL_SWAP_RXTX)
 static inline bool board_rc_swap_rxtx(const char *device) { return strcmp(device, RC_SERIAL_PORT) == 0; }
 #else
+#if defined(__PX4_FREERTOS)
+static inline bool board_rc_swap_rxtx(const char *device)
+{
+	(void)device;
+	return false;
+}
+#else
 static inline bool board_rc_swap_rxtx(const char *device) { return false; }
+#endif /* __PX4_FREERTOS */
 #endif
 
 /************************************************************************************
@@ -526,7 +550,16 @@ static inline bool board_rc_invert_input(const char *device, bool invert)
 	return false;
 }
 #else
+#if defined(__PX4_FREERTOS)
+static inline bool board_rc_invert_input(const char *device, bool invert)
+{
+	(void)device;
+	(void)invert;
+	return false;
+}
+#else
 static inline bool board_rc_invert_input(const char *device, bool invert) { return false; }
+#endif /* __PX4_FREERTOS */
 #endif
 
 /* Provide an interface for reading the connected state of VBUS */

@@ -43,9 +43,12 @@
 #include <px4_platform_common/time.h>
 #include <stdint.h>
 #include <stdio.h>
+#if !defined(__PX4_FREERTOS)
 #include <pthread.h>
+#endif /* __PX4_FREERTOS */
 #include <errno.h>
 
+#if !defined(__PX4_FREERTOS)
 #if (defined(__PX4_DARWIN) || defined(__PX4_CYGWIN) || defined(__PX4_POSIX)) && !defined(__PX4_QURT)
 
 #include <px4_platform_common/posix.h>
@@ -217,3 +220,4 @@ int px4_sem_destroy(px4_sem_t *s)
 }
 
 #endif
+#endif /* __PX4_FREERTOS */

@@ -53,8 +53,12 @@
 #include <uORB/topics/sensor_selection.h>
 #include <uORB/topics/vehicle_imu_status.h>
 
+#if defined(__PX4_FREERTOS)
+#include "gyro_fft_arm_math.h"
+#else
 #include "arm_math.h"
 #include "arm_const_structs.h"
+#endif /* __PX4_FREERTOS */
 
 using namespace time_literals;
 

@@ -156,6 +156,9 @@ private:
 	bool handle_command(const vehicle_command_s &cmd);
 
 	unsigned handleCommandActuatorTest(const vehicle_command_s &cmd);
+#if defined(__PX4_FREERTOS)
+	unsigned handleCommandMotorTest(const vehicle_command_s &cmd);
+#endif /* __PX4_FREERTOS */
 
 	void executeActionRequest(const action_request_s &action_request);
 

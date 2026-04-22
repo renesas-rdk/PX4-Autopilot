@@ -45,6 +45,9 @@
 #include <px4_platform_common/events.h>
 #include <px4_platform_common/log.h>
 #include <px4_platform_common/shutdown.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/tasks.h>
+#endif /* __PX4_FREERTOS */
 #include <parameters/param.h>
 
 
@@ -80,6 +83,9 @@ void WorkerThread::startTask(Request request)
 
 	/* low priority */
 	param.sched_priority = SCHED_PRIORITY_DEFAULT - 50;
+#if defined(__PX4_FREERTOS)
+	param.sched_priority = px4_task_adjust_priority(param.sched_priority);
+#endif /* __PX4_FREERTOS */
 	pthread_attr_setschedparam(&low_prio_attr, &param);
 
 	int ret = pthread_create(&_thread_handle, &low_prio_attr, &threadEntryTrampoline, this);

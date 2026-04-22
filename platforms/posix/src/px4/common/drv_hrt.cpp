@@ -50,6 +50,9 @@
 #include <string.h>
 #include <errno.h>
 #include "hrt_work.h"
+#if defined(__PX4_FREERTOS)
+extern "C" hrt_abstime rzv_hrt_absolute_time();
+#endif /* __PX4_FREERTOS */
 
 // Voxl2 board specific API definitions to get time offset
 #if defined(CONFIG_MUORB_APPS_SYNC_TIMESTAMP)
@@ -105,7 +108,9 @@ static void hrt_unlock()
  */
 hrt_abstime hrt_absolute_time()
 {
-#if defined(ENABLE_LOCKSTEP_SCHEDULER)
+#if defined(__PX4_FREERTOS)
+	return rzv_hrt_absolute_time();
+#elif defined(ENABLE_LOCKSTEP_SCHEDULER)
 	// optimized case (avoid ts_to_abstime) if lockstep scheduler is used
 	return lockstep_scheduler.get_absolute_time();
 
@@ -454,12 +459,25 @@ hrt_call_invoke()
 			// re-check call->deadline to allow for
 			// callouts to re-schedule themselves
 			// using hrt_call_delay()
+#if defined(__PX4_FREERTOS)
+			if (call->deadline == 0) {
+				hrt_abstime new_deadline = deadline + call->period;
+
+				if (new_deadline <= now) {
+					new_deadline = now + call->period;
+				}
+
+				call->deadline = new_deadline;
+				hrt_call_enter(call);
+			}
+#else
 			if (call->deadline <= now) {
 				call->deadline = deadline + call->period;
 				//PX4_INFO("call deadline set to %lu now=%lu", call->deadline,  now);
 			}
 
 			hrt_call_enter(call);
+#endif /* __PX4_FREERTOS */
 		}
 	}
 

@@ -1,0 +1,85 @@
+# Copyright (c) 2025 Renesas Electronics Corporation and/or its affiliates
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+#!/bin/sh
+# Board specific defaults for the Renesas RZ/V2H flight stack glue.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_FILE="/fs/microsd/etc/config.txt"
+EXTRAS_FILE="/fs/microsd/etc/extras.txt"
+
+# Legacy fallbacks (kept for compatibility only)
+LEGACY_CMD_FILE="/fs/microsd/rc.board_defaults.cmds"
+LEGACY_PARAM_FILE="/fs/microsd/params"
+EMBEDDED_CMD_FILE="${SCRIPT_DIR}/rc.board_defaults.cmds"
+
+run_cmd_file() {
+    local file="$1"
+
+    if [ ! -f "${file}" ]; then
+        return 1
+    fi
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "${line}" in
+            ''|\#*) continue ;;
+        esac
+
+        optional=0
+
+        if [ "${line#\?}" != "${line}" ]; then
+            optional=1
+            line="${line#\?}"
+            # trim leading whitespace after optional marker
+            line="${line#"${line%%[![:space:]]*}"}"
+
+            if [ -z "${line}" ]; then
+                continue
+            fi
+        fi
+
+        if ! eval "${line}"; then
+            if [ "${optional}" -eq 0 ]; then
+                echo "rc.board_defaults: failed command: ${line}" >&2
+                return 2
+            fi
+
+            echo "rc.board_defaults: optional command failed, continuing: ${line}" >&2
+        fi
+    done < "${file}"
+
+    return 0
+}
+
+ran_any=0
+
+# Preferred CA55-provided command lists
+if run_cmd_file "${CONFIG_FILE}"; then
+    ran_any=1
+fi
+
+if run_cmd_file "${EXTRAS_FILE}"; then
+    ran_any=1
+fi
+
+# Legacy compatibility: single bundled command list or params.txt
+if [ "${ran_any}" -eq 0 ]; then
+    if run_cmd_file "${LEGACY_CMD_FILE}"; then
+        ran_any=1
+    fi
+fi
+
+if [ "${ran_any}" -eq 0 ]; then
+    if run_cmd_file "${LEGACY_PARAM_FILE}"; then
+        ran_any=1
+    fi
+fi
+
+# Final fallback to embedded command list
+if [ "${ran_any}" -eq 0 ]; then
+    if ! run_cmd_file "${EMBEDDED_CMD_FILE}"; then
+        echo "rc.board_defaults: missing command list" >&2
+        exit 1
+    fi
+fi

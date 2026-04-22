@@ -47,6 +47,9 @@
 #include <px4_platform_common/posix.h>
 #include <px4_platform_common/tasks.h>
 #include <px4_platform_common/getopt.h>
+#if defined(__PX4_FREERTOS)
+#include <unistd.h>
+#endif /* __PX4_FREERTOS */
 #include <drivers/drv_hrt.h>
 #include <lib/parameters/param.h>
 #include <lib/perf/perf_counter.h>
@@ -286,7 +289,11 @@ _file_write(dm_item_t item, unsigned index, const void *buf, size_t count)
 	bool write_success = false;
 
 	for (int i = 0; i < 2; i++) {
+#if defined(__PX4_FREERTOS)
+		int ret_seek = px4_file_lseek(dm_operations_data.file.fd, offset, SEEK_SET);
+#else
 		int ret_seek = lseek(dm_operations_data.file.fd, offset, SEEK_SET);
+#endif /* __PX4_FREERTOS */
 
 		if (ret_seek < 0) {
 			PX4_ERR("file write lseek failed %d", errno);
@@ -298,7 +305,11 @@ _file_write(dm_item_t item, unsigned index, const void *buf, size_t count)
 			continue;
 		}
 
+#if defined(__PX4_FREERTOS)
+		int ret_write = px4_file_write(dm_operations_data.file.fd, buffer, count);
+#else
 		int ret_write = write(dm_operations_data.file.fd, buffer, count);
+#endif /* __PX4_FREERTOS */
 
 		if (ret_write < 0) {
 			PX4_ERR("file write failed %d", errno);
@@ -320,7 +331,11 @@ _file_write(dm_item_t item, unsigned index, const void *buf, size_t count)
 	}
 
 	/* Make sure data is written to physical media */
+#if defined(__PX4_FREERTOS)
+	px4_file_fsync(dm_operations_data.file.fd);
+#else
 	fsync(dm_operations_data.file.fd);
+#endif /* __PX4_FREERTOS */
 
 	/* All is well... return the number of user data written */
 	return count - DM_SECTOR_HDR_SIZE;
@@ -398,7 +413,11 @@ _file_read(dm_item_t item, unsigned index, void *buf, size_t count)
 	bool read_success = false;
 
 	for (int i = 0; i < 2; i++) {
+#if defined(__PX4_FREERTOS)
+		int ret_seek = px4_file_lseek(dm_operations_data.file.fd, offset, SEEK_SET);
+#else
 		int ret_seek = lseek(dm_operations_data.file.fd, offset, SEEK_SET);
+#endif /* __PX4_FREERTOS */
 
 		if ((ret_seek < 0) && !dm_operations_data.silence) {
 			PX4_ERR("file read lseek failed %d", errno);
@@ -411,7 +430,11 @@ _file_read(dm_item_t item, unsigned index, void *buf, size_t count)
 		}
 
 		/* Read the prefix and data */
+#if defined(__PX4_FREERTOS)
+		len = px4_file_read(dm_operations_data.file.fd, buffer, count + DM_SECTOR_HDR_SIZE);
+#else
 		len = read(dm_operations_data.file.fd, buffer, count + DM_SECTOR_HDR_SIZE);
+#endif /* __PX4_FREERTOS */
 
 		/* Check for read error */
 		if (len >= 0) {
@@ -507,26 +530,42 @@ _file_clear(dm_item_t item)
 	for (int i = 0; (unsigned)i < g_per_item_max_index[item]; i++) {
 		char buf[1];
 
+#if defined(__PX4_FREERTOS)
+		if (px4_file_lseek(dm_operations_data.file.fd, offset, SEEK_SET) != offset) {
+#else
 		if (lseek(dm_operations_data.file.fd, offset, SEEK_SET) != offset) {
+#endif /* __PX4_FREERTOS */
 			result = -1;
 			break;
 		}
 
 		/* Avoid SD flash wear by only doing writes where necessary */
+#if defined(__PX4_FREERTOS)
+		if (px4_file_read(dm_operations_data.file.fd, buf, 1) < 1) {
+#else
 		if (read(dm_operations_data.file.fd, buf, 1) < 1) {
+#endif /* __PX4_FREERTOS */
 			break;
 		}
 
 		/* If item has length greater than 0 it needs to be overwritten */
 		if (buf[0]) {
+#if defined(__PX4_FREERTOS)
+			if (px4_file_lseek(dm_operations_data.file.fd, offset, SEEK_SET) != offset) {
+#else
 			if (lseek(dm_operations_data.file.fd, offset, SEEK_SET) != offset) {
+#endif /* __PX4_FREERTOS */
 				result = -1;
 				break;
 			}
 
 			buf[0] = 0;
 
+#if defined(__PX4_FREERTOS)
+			if (px4_file_write(dm_operations_data.file.fd, buf, 1) != 1) {
+#else
 			if (write(dm_operations_data.file.fd, buf, 1) != 1) {
+#endif /* __PX4_FREERTOS */
 				result = -1;
 				break;
 			}
@@ -536,7 +575,11 @@ _file_clear(dm_item_t item)
 	}
 
 	/* Make sure data is actually written to physical media */
+#if defined(__PX4_FREERTOS)
+	px4_file_fsync(dm_operations_data.file.fd);
+#else
 	fsync(dm_operations_data.file.fd);
+#endif /* __PX4_FREERTOS */
 	return result;
 }
 #endif
@@ -545,10 +588,18 @@ _file_clear(dm_item_t item)
 static int
 _file_initialize(unsigned max_offset)
 {
+#if defined(__PX4_FREERTOS)
+	const bool file_existed = (px4_file_access(k_data_manager_device_path, F_OK) == 0);
+#else
 	const bool file_existed = (access(k_data_manager_device_path, F_OK) == 0);
+#endif /* __PX4_FREERTOS */
 
 	/* Open or create the data manager file */
+#if defined(__PX4_FREERTOS)
+	dm_operations_data.file.fd = px4_file_open(k_data_manager_device_path, O_RDWR | O_CREAT | O_BINARY, PX4_O_MODE_666);
+#else
 	dm_operations_data.file.fd = open(k_data_manager_device_path, O_RDWR | O_CREAT | O_BINARY, PX4_O_MODE_666);
+#endif /* __PX4_FREERTOS */
 
 	if (dm_operations_data.file.fd < 0) {
 		PX4_WARN("Could not open data manager file %s", k_data_manager_device_path);
@@ -556,8 +607,13 @@ _file_initialize(unsigned max_offset)
 		return -1;
 	}
 
+#if defined(__PX4_FREERTOS)
+	if ((unsigned)px4_file_lseek(dm_operations_data.file.fd, max_offset, SEEK_SET) != max_offset) {
+		px4_file_close(dm_operations_data.file.fd);
+#else
 	if ((unsigned)lseek(dm_operations_data.file.fd, max_offset, SEEK_SET) != max_offset) {
 		close(dm_operations_data.file.fd);
+#endif /* __PX4_FREERTOS */
 		PX4_WARN("Could not seek data manager file %s", k_data_manager_device_path);
 		px4_sem_post(&g_init_sema); /* Don't want to hang startup */
 		return -1;
@@ -632,7 +688,11 @@ _ram_initialize(unsigned max_offset)
 static void
 _file_shutdown()
 {
+#if defined(__PX4_FREERTOS)
+	px4_file_close(dm_operations_data.file.fd);
+#else
 	close(dm_operations_data.file.fd);
+#endif /* __PX4_FREERTOS */
 	dm_operations_data.running = false;
 }
 #endif

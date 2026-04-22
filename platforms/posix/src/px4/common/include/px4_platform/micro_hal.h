@@ -37,6 +37,24 @@
 
 typedef int (*xcpt_t)(int irq, void *context, void *arg);
 
+#if defined(__PX4_FREERTOS)
+#  ifdef __cplusplus
+extern "C" {
+#  endif
+
+int px4_arch_configgpio(uint32_t pinset);
+int px4_arch_unconfiggpio(uint32_t pinset);
+bool px4_arch_gpioread(uint32_t pinset);
+void px4_arch_gpiowrite(uint32_t pinset, bool value);
+int px4_arch_gpiosetevent(uint32_t pinset, bool risingedge, bool fallingedge,
+				 bool event, xcpt_t func, void *arg);
+
+#  ifdef __cplusplus
+}
+#  endif
+
+#else
+
 static inline int px4_arch_configgpio(uint32_t pinset) { return -1; }
 static inline int px4_arch_unconfiggpio(uint32_t pinset) { return -1; }
 static inline bool px4_arch_gpioread(uint32_t pinset) { return false; }
@@ -44,6 +62,7 @@ static inline void px4_arch_gpiowrite(uint32_t pinset, bool value) { }
 static inline int px4_arch_gpiosetevent(uint32_t pinset, bool risingedge, bool fallingedge,
 					bool event, xcpt_t func, void *arg) { return -1; }
 
+#endif /* __PX4_FREERTOS */
 #define px4_udelay(usec) px4_usleep(usec)
 #define px4_mdelay(msec) px4_msleep(msec)
 

@@ -44,6 +44,11 @@
 #include <px4_platform_common/defines.h>
 #include <px4_platform_common/log.h>
 
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#include <px4_platform_common/posix.h>
+#include <px4_platform_common/posix.h>
+#endif /* __PX4_FREERTOS */
 #include <fcntl.h>
 #include <math.h>
 #include <unistd.h>
@@ -435,6 +440,19 @@ static bool dsm_guess_format(bool reset)
 
 int dsm_config(int fd)
 {
+#if defined(__PX4_FREERTOS)
+	(void)fd;
+	uart_set_rc_serial_mode(true);
+
+	if (uart_reopen_rc_channel(115200) != 0) {
+		errno = EIO;
+		return -1;
+	}
+
+	uart_rc_buffer_flush(0);
+	errno = 0;
+	return 0;
+#else
 #ifdef SPEKTRUM_POWER_CONFIG
 	// Enable power controls for Spektrum receiver
 	SPEKTRUM_POWER_CONFIG();
@@ -467,6 +485,7 @@ int dsm_config(int fd)
 	}
 
 	return ret;
+#endif /* __PX4_FREERTOS */
 }
 
 void dsm_proto_init()

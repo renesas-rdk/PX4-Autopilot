@@ -42,11 +42,84 @@
 
 #include <termios.h>
 
+#if defined(__PX4_FREERTOS)
+#ifndef B0
+#define B0 0
+#endif
+#ifndef B50
+#define B50 50
+#endif
+#ifndef B75
+#define B75 75
+#endif
+#ifndef B110
+#define B110 110
+#endif
+#ifndef B134
+#define B134 134
+#endif
+#ifndef B150
+#define B150 150
+#endif
+#ifndef B200
+#define B200 200
+#endif
+#ifndef B300
+#define B300 300
+#endif
+#ifndef B600
+#define B600 600
+#endif
+#ifndef B1200
+#define B1200 1200
+#endif
+#ifndef B1800
+#define B1800 1800
+#endif
+#ifndef B2400
+#define B2400 2400
+#endif
+#ifndef B4800
+#define B4800 4800
+#endif
+#ifndef B9600
+#define B9600 9600
+#endif
+#ifndef B19200
+#define B19200 19200
+#endif
+#ifndef B38400
+#define B38400 38400
+#endif
+#ifndef B57600
+#define B57600 57600
+#endif
+#ifndef B115200
+#define B115200 115200
+#endif
+#ifndef B230400
+#define B230400 230400
+#endif
+#ifndef ONLCR
+#define ONLCR 0
+#endif
+#ifndef TCSANOW
+#define TCSANOW 0
+#endif
+#ifndef CRTSCTS
+#define CRTSCTS 0
+#endif
+#ifndef TCIOFLUSH
+#define TCIOFLUSH 0
+#endif
+#include <px4_platform_common/posix.h>
+#else
 #ifdef CONFIG_NET
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netutils/netlib.h>
 #endif
+#endif /* __PX4_FREERTOS */
 
 #include <containers/LockGuard.hpp>
 #include <lib/geo/geo.h>
@@ -79,6 +152,15 @@
 #define FLOW_CONTROL_DISABLE_THRESHOLD 40              ///< picked so that some messages still would fit it.
 #define MAX_DATA_RATE                  10000000        ///< max data rate in bytes/s
 #define MAIN_LOOP_DELAY                10000           ///< 100 Hz @ 1000 bytes/s data rate
+
+#if defined(__PX4_FREERTOS)
+#  define MAVLINK_ACCESS px4_access
+#  define MAVLINK_OPEN px4_open
+#  define MAVLINK_CLOSE px4_close
+#  define MAVLINK_READ px4_read
+#  define MAVLINK_WRITE px4_write
+#  define MAVLINK_IOCTL px4_ioctl
+#endif /* __PX4_FREERTOS */
 
 static pthread_mutex_t mavlink_module_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t mavlink_event_buffer_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -588,7 +670,11 @@ Mavlink::mavlink_open_uart(const int baud, const char *uart_name, const FLOW_CON
 	}
 
 	/* open uart */
+#if defined(__PX4_FREERTOS)
+	_uart_fd = MAVLINK_OPEN(uart_name, O_RDWR | O_NOCTTY);
+#else
 	_uart_fd = ::open(uart_name, O_RDWR | O_NOCTTY);
+#endif /* __PX4_FREERTOS */
 
 	/*
 	 * Return here in the iridium mode since the iridium driver does not
@@ -605,7 +691,11 @@ Mavlink::mavlink_open_uart(const int baud, const char *uart_name, const FLOW_CON
 	/* Initialize the uart config */
 	if ((termios_state = tcgetattr(_uart_fd, &uart_config)) < 0) {
 		PX4_ERR("ERR GET CONF %s: %d\n", uart_name, termios_state);
+#if defined(__PX4_FREERTOS)
+		MAVLINK_CLOSE(_uart_fd);
+#else
 		::close(_uart_fd);
+#endif /* __PX4_FREERTOS */
 		return -1;
 	}
 
@@ -615,7 +705,11 @@ Mavlink::mavlink_open_uart(const int baud, const char *uart_name, const FLOW_CON
 	/* Set baud rate */
 	if (cfsetispeed(&uart_config, speed) < 0 || cfsetospeed(&uart_config, speed) < 0) {
 		PX4_ERR("ERR SET BAUD %s: %d\n", uart_name, termios_state);
+#if defined(__PX4_FREERTOS)
+		MAVLINK_CLOSE(_uart_fd);
+#else
 		::close(_uart_fd);
+#endif /* __PX4_FREERTOS */
 		return -1;
 	}
 
@@ -626,7 +720,11 @@ Mavlink::mavlink_open_uart(const int baud, const char *uart_name, const FLOW_CON
 
 	if ((termios_state = tcsetattr(_uart_fd, TCSANOW, &uart_config)) < 0) {
 		PX4_WARN("ERR SET CONF %s\n", uart_name);
+#if defined(__PX4_FREERTOS)
+		MAVLINK_CLOSE(_uart_fd);
+#else
 		::close(_uart_fd);
+#endif /* __PX4_FREERTOS */
 		return -1;
 	}
 
@@ -770,7 +868,11 @@ void Mavlink::send_finish()
 
 	// send message to UART
 	if (get_protocol() == Protocol::SERIAL) {
+#if defined(__PX4_FREERTOS)
+		ret = MAVLINK_WRITE(_uart_fd, _buf, _buf_fill);
+#else
 		ret = ::write(_uart_fd, _buf, _buf_fill);
+#endif /* __PX4_FREERTOS */
 	}
 
 #if defined(MAVLINK_UDP)
@@ -824,6 +926,36 @@ void Mavlink::send_finish()
 
 	_buf_fill = 0;
 
+#if defined(__PX4_FREERTOS)
+	{
+		static hrt_abstime last_tx_log = 0;
+		static unsigned last_tx_bytes = 0;
+		static unsigned last_tx_err_bytes = 0;
+
+		hrt_abstime now = hrt_absolute_time();
+		if ((now - last_tx_log) > 5000000) {  // 5 seconds
+			unsigned tx = _bytes_tx;
+			unsigned txerr = _bytes_txerr;
+			unsigned d_tx = (tx >= last_tx_bytes) ? (tx - last_tx_bytes) : tx;
+			unsigned d_err = (txerr >= last_tx_err_bytes) ? (txerr - last_tx_err_bytes) : txerr;
+			long long last_ok_ms = (_last_write_success_time != 0)
+					       ? (long long)(hrt_elapsed_time(&_last_write_success_time) / 1000)
+					       : -1LL;
+			long long last_try_ms = (_last_write_try_time != 0)
+						? (long long)(hrt_elapsed_time(&_last_write_try_time) / 1000)
+						: -1LL;
+
+			PX4_DEBUG("[MAV_TX] d_tx=%u d_err=%u last_ok_ms=%lld last_try_ms=%lld",
+				 (unsigned)d_tx, (unsigned)d_err,
+				 last_ok_ms, last_try_ms);
+
+			last_tx_log = now;
+			last_tx_bytes = tx;
+			last_tx_err_bytes = txerr;
+		}
+	}
+#endif /* __PX4_FREERTOS */
+
 	pthread_mutex_unlock(&_send_mutex);
 }
 
@@ -856,7 +988,11 @@ void Mavlink::find_broadcast_address()
 	ifconf.ifc_req = nullptr;
 	ifconf.ifc_len = 0;
 
+#if defined(__PX4_FREERTOS)
+	ret = MAVLINK_IOCTL(_socket_fd, SIOCGIFCONF, &ifconf);
+#else
 	ret = ioctl(_socket_fd, SIOCGIFCONF, &ifconf);
+#endif /* __PX4_FREERTOS */
 
 	if (ret != 0) {
 		PX4_WARN("getting required buffer size failed");
@@ -877,7 +1013,11 @@ void Mavlink::find_broadcast_address()
 
 	memset(ifconf.ifc_req, 0, ifconf.ifc_len);
 
+#if defined(__PX4_FREERTOS)
+	ret = MAVLINK_IOCTL(_socket_fd, SIOCGIFCONF, &ifconf);
+#else
 	ret = ioctl(_socket_fd, SIOCGIFCONF, &ifconf);
+#endif /* __PX4_FREERTOS */
 
 	if (ret != 0) {
 		PX4_ERR("getting network config failed");
@@ -978,7 +1118,11 @@ const in_addr Mavlink::query_netmask_addr(const int socket_fd, const ifreq &ifre
 {
 	struct ifreq netmask_ifreq {};
 	strncpy(netmask_ifreq.ifr_name, ifreq.ifr_name, IF_NAMESIZE);
+#if defined(__PX4_FREERTOS)
+	MAVLINK_IOCTL(socket_fd, SIOCGIFNETMASK, &netmask_ifreq);
+#else
 	ioctl(socket_fd, SIOCGIFNETMASK, &netmask_ifreq);
+#endif /* __PX4_FREERTOS */
 
 	return ((struct sockaddr_in *)&netmask_ifreq.ifr_addr)->sin_addr;
 }
@@ -1084,12 +1228,18 @@ Mavlink::send_autopilot_capabilities()
 			param_t param_handle = param_find_no_notification("MNT_MODE_IN");
 			int32_t mnt_mode_in = 0;
 
+#if defined(__PX4_FREERTOS)
+			if (param_handle != PARAM_INVALID) {
+#else
 			if (mnt_mode_in != PARAM_INVALID) {
+#endif /* __PX4_FREERTOS */
 				param_get(param_handle, &mnt_mode_in);
 
+#ifdef MAV_PROTOCOL_CAPABILITY_COMPONENT_IMPLEMENTS_GIMBAL_MANAGER
 				if (mnt_mode_in == 4) {
 					msg.capabilities |= MAV_PROTOCOL_CAPABILITY_COMPONENT_IMPLEMENTS_GIMBAL_MANAGER;
 				}
+#endif /* __PX4_FREERTOS */
 			}
 		}
 
@@ -1872,6 +2022,7 @@ Mavlink::configure_streams_to_default(const char *configure_single_stream)
 int
 Mavlink::task_main(int argc, char *argv[])
 {
+#if !defined(__PX4_FREERTOS)
 	// If stdin, stdout and/or stderr file descriptors (0, 1, 2)
 	// are not open when mavlink module starts (as might be the case for USB auto-start),
 	// use default /dev/null so that these numbers are not used by other other files.
@@ -1902,6 +2053,7 @@ Mavlink::task_main(int argc, char *argv[])
 			close(tmp);
 		}
 	}
+#endif /* __PX4_FREERTOS */
 
 	int ch;
 	_baudrate = 57600;
@@ -1920,9 +2072,11 @@ Mavlink::task_main(int argc, char *argv[])
 	bool err_flag = false;
 	int myoptind = 1;
 	const char *myoptarg = nullptr;
+#if !defined(__PX4_FREERTOS)
 #if defined(CONFIG_NET) || defined(__PX4_POSIX)
 	int temp_int_arg;
 #endif
+#endif /* __PX4_FREERTOS */
 
 	while ((ch = px4_getopt(argc, argv, "b:r:d:n:u:o:m:t:c:F:fswxzZp", &myoptind, &myoptarg)) != EOF) {
 		switch (ch) {
@@ -1956,7 +2110,11 @@ Mavlink::task_main(int argc, char *argv[])
 			_device_name = myoptarg;
 			set_protocol(Protocol::SERIAL);
 
+#if defined(__PX4_FREERTOS)
+			if (MAVLINK_ACCESS(_device_name, F_OK) == -1) {
+#else
 			if (access(_device_name, F_OK) == -1) {
+#endif /* __PX4_FREERTOS */
 				PX4_ERR("Device %s does not exist", _device_name);
 				err_flag = true;
 			}
@@ -2508,7 +2666,11 @@ Mavlink::task_main(int argc, char *argv[])
 		/* discard all pending data, as close() might block otherwise on NuttX with flow control enabled */
 		tcflush(_uart_fd, TCIOFLUSH);
 		/* close UART */
+#if defined(__PX4_FREERTOS)
+		MAVLINK_CLOSE(_uart_fd);
+#else
 		::close(_uart_fd);
+#endif /* __PX4_FREERTOS */
 	}
 
 	if (_socket_fd >= 0) {
@@ -2911,7 +3073,11 @@ Mavlink::start(int argc, char *argv[])
 	px4_task_spawn_cmd("mavlink_main",
 			   SCHED_DEFAULT,
 			   SCHED_PRIORITY_DEFAULT,
+#if defined(__PX4_FREERTOS)
+			   PX4_STACK_ADJUSTED(20480) + MAVLINK_NET_ADDED_STACK,
+#else
 			   PX4_STACK_ADJUSTED(2896) + MAVLINK_NET_ADDED_STACK,
+#endif /* __PX4_FREERTOS */
 			   (px4_main_t)&Mavlink::start_helper,
 			   (char *const *)argv);
 

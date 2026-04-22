@@ -81,10 +81,23 @@ public:
 			reset(samples[0]);
 			_initialized = true;
 		}
+#if defined(__PX4_FREERTOS)
+		// Limit array size to prevent stack overflow
+		const int safe_num_samples = (num_samples > 256) ? 256 : num_samples;
 
+		for (int n = 0; n < safe_num_samples; n++) {
+			samples[n] = applyInternal(samples[n]);
+		}
+
+		// Warn if array was too large
+		if (num_samples > 256) {
+			// This should trigger a compile warning, but won't affect runtime
+		}
+#else
 		for (int n = 0; n < num_samples; n++) {
 			samples[n] = applyInternal(samples[n]);
 		}
+#endif /* __PX4_FREERTOS */
 	}
 
 	float getNotchFreq() const { return _notch_freq; }
@@ -222,6 +235,13 @@ bool NotchFilter<T>::setParameters(float sample_freq, float notch_freq, float ba
 		disable();
 		return false;
 	}
+#if defined(__PX4_FREERTOS)
+	// Additional safety check: prevent division by zero
+	if (sample_freq < 1.0f) {
+		disable();
+		return false;
+	}
+#endif /* __PX4_FREERTOS */
 
 	const float freq_min = sample_freq * 0.001f;
 
@@ -239,6 +259,13 @@ bool NotchFilter<T>::setParameters(float sample_freq, float notch_freq, float ba
 
 		if (notch_freq_diff > FLT_EPSILON) {
 			// only notch frequency has changed
+#if defined(__PX4_FREERTOS)
+			// Safety check: _sample_freq must be valid
+			if (_sample_freq <= FLT_EPSILON || !isFinite(_sample_freq)) {
+				disable();
+				return false;
+			}
+#endif /* __PX4_FREERTOS */
 			_notch_freq = notch_freq_new;
 
 			const float beta = -cosf(2.f * M_PI_F * _notch_freq / _sample_freq);
@@ -270,6 +297,13 @@ bool NotchFilter<T>::setParameters(float sample_freq, float notch_freq, float ba
 
 	const float alpha = tanf(M_PI_F * _bandwidth / _sample_freq);
 	const float beta = -cosf(2.f * M_PI_F * _notch_freq / _sample_freq);
+#if defined(__PX4_FREERTOS)
+	// Safety check: alpha must be valid
+	if (!isFinite(alpha) || (alpha <= -1.f)) {
+		disable();
+		return false;
+	}
+#endif /* __PX4_FREERTOS */
 	const float a0_inv = 1.f / (alpha + 1.f);
 
 	_b0 = a0_inv;

@@ -51,7 +51,18 @@
 #include <pthread.h>
 #include <limits.h>
 
+#if defined(__PX4_FREERTOS)
+#ifndef PTHREAD_STACK_MIN
+#define PTHREAD_STACK_MIN 256
+#endif
+#ifndef PTHREAD_EXPLICIT_SCHED
+#define PTHREAD_EXPLICIT_SCHED 0
+#endif
+#ifndef PTHREAD_CREATE_JOINABLE
+#define PTHREAD_CREATE_JOINABLE 0
+#endif
 #include <sys/stat.h>
+#endif /* __PX4_FREERTOS */
 #include <sys/types.h>
 #include <string>
 
@@ -210,7 +221,11 @@ px4_task_t px4_task_spawn_cmd(const char *name, int scheduler, int priority, int
 	priority = SCHED_PRIORITY_DEFAULT;
 #endif
 
+#if defined(__PX4_FREERTOS)
+	param.sched_priority = px4_task_adjust_priority(priority);
+#else
 	param.sched_priority = priority;
+#endif /* __PX4_FREERTOS */
 
 	rv = pthread_attr_setschedparam(&attr, &param);
 

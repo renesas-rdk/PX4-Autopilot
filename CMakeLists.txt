@@ -101,6 +101,10 @@
 
 cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 
+if(POLICY CMP0148)
+	cmake_policy(SET CMP0148 OLD)
+endif()
+
 set(PX4_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE FILEPATH "PX4 source directory" FORCE)
 set(PX4_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}" CACHE FILEPATH "PX4 binary directory" FORCE)
 
@@ -112,17 +116,39 @@ include(px4_parse_function_args)
 #
 include(px4_git)
 
-execute_process(
-	COMMAND git describe --exclude ext/* --tags --match "v[0-9]*"
-	OUTPUT_VARIABLE PX4_GIT_TAG
-	OUTPUT_STRIP_TRAILING_WHITESPACE
-	RESULTS_VARIABLE GIT_DESCRIBE_RESULT
-	WORKING_DIRECTORY ${PX4_SOURCE_DIR}
-	)
+set(PX4_GIT_TAG "")
+# Default to a non-zero result so the fallback path is used when the
+# px4 directory is not a git checkout (e.g. when provided as a tarball).
+set(GIT_DESCRIBE_RESULT "1")
+
+if(EXISTS ${PX4_SOURCE_DIR}/.git)
+	execute_process(
+		COMMAND git describe --exclude ext/* --tags --match "v[0-9]*"
+		OUTPUT_VARIABLE PX4_GIT_TAG
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+		RESULTS_VARIABLE GIT_DESCRIBE_RESULT
+		WORKING_DIRECTORY ${PX4_SOURCE_DIR}
+		)
+endif()
 
 # if proper git tag unavilable default to v0.0.0
 if(NOT ${GIT_DESCRIBE_RESULT} MATCHES "0")
 	set(PX4_GIT_TAG "v0.0.0")
+
+	set(PX4_VERSION_FALLBACK_FILE "${PX4_SOURCE_DIR}/PX4_VERSION")
+
+	if(DEFINED PX4_DEFAULT_GIT_TAG)
+		# allow callers to provide a fallback version via -DPX4_DEFAULT_GIT_TAG=<version>
+		set(PX4_GIT_TAG ${PX4_DEFAULT_GIT_TAG})
+
+	elseif(EXISTS ${PX4_VERSION_FALLBACK_FILE})
+		file(READ ${PX4_VERSION_FALLBACK_FILE} PX4_VERSION_FILE_CONTENTS)
+		string(STRIP "${PX4_VERSION_FILE_CONTENTS}" PX4_VERSION_FILE_CONTENTS)
+
+		if(PX4_VERSION_FILE_CONTENTS)
+			set(PX4_GIT_TAG "${PX4_VERSION_FILE_CONTENTS}")
+		endif()
+	endif()
 endif()
 
 message(STATUS "PX4_GIT_TAG: ${PX4_GIT_TAG}")
@@ -164,6 +190,20 @@ define_property(GLOBAL PROPERTY PX4_SRC_FILES
                  FULL_DOCS "SRC files from px4_add_{module,library}"
                  )
 
+define_property(GLOBAL PROPERTY PX4_LIBPX4_ARCHIVES
+                 BRIEF_DOCS "PX4 static archives to bundle"
+                 FULL_DOCS "Static library targets that must be merged into libpx4.a"
+                 )
+
+function(px4_register_archive target)
+    if(TARGET ${target})
+        get_target_property(_target_type ${target} TYPE)
+        if(_target_type STREQUAL "STATIC_LIBRARY")
+            set_property(GLOBAL APPEND PROPERTY PX4_LIBPX4_ARCHIVES ${target})
+        endif()
+    endif()
+endfunction()
+
 #=============================================================================
 # configuration
 #
@@ -187,10 +227,14 @@ if(PYTHON_COVERAGE)
 	set(PYTHON_EXECUTABLE coverage run -p)
 endif()
 
+option(PX4_BUILD_LIB_ONLY "Bundle PX4 core into a single static library" OFF)
+
 include(px4_config)
 include(kconfig)
 message(STATUS "PX4 config: ${PX4_CONFIG}")
 message(STATUS "PX4 platform: ${PX4_PLATFORM}")
+
+include_directories(${PX4_SOURCE_DIR}/src/lib/events/libevents/libs/cpp/include)
 
 if($ENV{CLION_IDE})
 	# CLion automatically executes some compiler commands after configuring the

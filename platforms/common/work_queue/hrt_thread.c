@@ -44,7 +44,9 @@
 #include <px4_platform_common/tasks.h>
 #include <px4_platform_common/time.h>
 #include <stdint.h>
+#if !defined(__PX4_FREERTOS)
 #include <signal.h>
+#endif /* __PX4_FREERTOS */
 #include <stdio.h>
 #include <unistd.h>
 #include <queue.h>
@@ -53,6 +55,42 @@
 #include "hrt_work.h"
 
 #include <string.h>
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#include <time.h>
+
+#include <FreeRTOS.h>
+#include <semphr.h>
+
+static inline TickType_t hrt_timeout_to_ticks(uint32_t timeout_us)
+{
+	if (timeout_us == 0) {
+		timeout_us = 1;
+	}
+
+	uint64_t ticks64 = ((uint64_t)timeout_us * configTICK_RATE_HZ + 1000000ULL - 1ULL) / 1000000ULL;
+
+	if (ticks64 == 0) {
+		ticks64 = 1;
+	}
+
+	TickType_t max_block = portMAX_DELAY;
+
+#if (INCLUDE_vTaskSuspend == 1)
+	if (max_block > 0) {
+		--max_block;
+	}
+#endif
+
+	if ((max_block > 0) && (ticks64 > (uint64_t)max_block)) {
+		ticks64 = max_block;
+	} else if (ticks64 > (uint64_t)portMAX_DELAY) {
+		ticks64 = portMAX_DELAY;
+	}
+
+	return (TickType_t)ticks64;
+}
+#endif /* __PX4_FREERTOS */
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -79,6 +117,19 @@ px4_sem_t _hrt_work_lock;
  ****************************************************************************/
 static void hrt_work_process(void);
 
+#if defined(__PX4_FREERTOS)
+static void hrt_wait(struct wqueue_s *wqueue, uint32_t timeout_us)
+{
+	TickType_t wait_ticks = hrt_timeout_to_ticks(timeout_us);
+
+	if (wait_ticks == 0) {
+		/* Ensure we at least yield once */
+		wait_ticks = 1;
+	}
+
+	(void)xSemaphoreTake(wqueue->wait_sem.handle, wait_ticks);
+}
+#else
 static void _sighandler(int sig_num);
 
 /****************************************************************************
@@ -98,6 +149,7 @@ static void _sighandler(int sig_num)
 {
 	PX4_DEBUG("RECEIVED SIGNAL %d", sig_num);
 }
+#endif /* __PX4_FREERTOS */
 
 /****************************************************************************
  * Name: work_process
@@ -229,7 +281,11 @@ static void hrt_work_process(void)
 
 	/* might sleep less if a signal received and new item was queued */
 	//PX4_INFO("Sleeping for %u usec", next);
+#if defined(__PX4_FREERTOS)
+	hrt_wait(wqueue, next);
+#else
 	px4_usleep(next);
+#endif /* __PX4_FREERTOS */
 }
 
 /****************************************************************************
@@ -287,15 +343,25 @@ void hrt_work_queue_init(void)
 {
 	px4_sem_init(&_hrt_work_lock, 0, 1);
 	memset(&g_hrt_work, 0, sizeof(g_hrt_work));
+#if defined(__PX4_FREERTOS)
+	dq_init(&g_hrt_work.q);
+	px4_sem_init(&g_hrt_work.wait_sem, 0, 0);
+#endif /* __PX4_FREERTOS */
 
 	// Create high priority worker thread
 	g_hrt_work.pid = px4_task_spawn_cmd("wkr_hrt",
 					    SCHED_DEFAULT,
 					    SCHED_PRIORITY_MAX,
+#if defined(__PX4_FREERTOS)
+					    2000*4,
+#else
 					    2000,
+#endif /* __PX4_FREERTOS */
 					    work_hrtthread,
 					    (char *const *)NULL);
 
 
+#if !defined(__PX4_FREERTOS)
 	signal(SIGCONT, _sighandler);
+#endif /* __PX4_FREERTOS */
 }

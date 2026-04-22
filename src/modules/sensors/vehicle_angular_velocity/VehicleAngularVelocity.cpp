@@ -676,15 +676,34 @@ void VehicleAngularVelocity::UpdateDynamicNotchFFT(const hrt_abstime &time_now_u
 		}
 
 		sensor_gyro_fft_s sensor_gyro_fft;
+#if defined(__PX4_FREERTOS)
+		if (!PX4_ISFINITE(_filter_sample_rate_hz) || (_filter_sample_rate_hz <= FLT_EPSILON)) {
+			PX4_ERR("Invalid filter sample rate in UpdateDynamicNotchFFT: %.3f Hz", (double)_filter_sample_rate_hz);
+			DisableDynamicNotchFFT();
+			return;
+		}
+#endif /* __PX4_FREERTOS */
 
 		if (_sensor_gyro_fft_sub.copy(&sensor_gyro_fft)
 		    && (sensor_gyro_fft.device_id == _selected_sensor_device_id)
 		    && (time_now_us < sensor_gyro_fft.timestamp + DYNAMIC_NOTCH_FITLER_TIMEOUT)
+#if defined(__PX4_FREERTOS)
+		    && PX4_ISFINITE(sensor_gyro_fft.sensor_sample_rate_hz)
+		    && (sensor_gyro_fft.sensor_sample_rate_hz > FLT_EPSILON)
+#endif /* __PX4_FREERTOS */
 		    && ((fabsf(sensor_gyro_fft.sensor_sample_rate_hz - _filter_sample_rate_hz) / _filter_sample_rate_hz) < 0.02f)) {
 
 			static constexpr float peak_freq_min = 10.f; // lower bound TODO: configurable?
 
 			const float bandwidth = math::constrain(sensor_gyro_fft.resolution_hz, 8.f, 30.f); // TODO: base on numerical limits?
+#if defined(__PX4_FREERTOS)
+			// SAFETY CHECK: Validate bandwidth
+			if (!PX4_ISFINITE(bandwidth) || (bandwidth <= FLT_EPSILON)) {
+				PX4_WARN("Invalid bandwidth in FFT notch filter: %.3f", (double)bandwidth);
+				DisableDynamicNotchFFT();
+				return;
+			}
+#endif /* __PX4_FREERTOS */
 
 			float *peak_frequencies[] {sensor_gyro_fft.peak_frequencies_x, sensor_gyro_fft.peak_frequencies_y, sensor_gyro_fft.peak_frequencies_z};
 
@@ -694,12 +713,39 @@ void VehicleAngularVelocity::UpdateDynamicNotchFFT(const hrt_abstime &time_now_u
 					const float peak_freq = peak_frequencies[axis][peak];
 
 					auto &nf = _dynamic_notch_filter_fft[axis][peak];
+#if defined(__PX4_FREERTOS)
+					// SAFETY CHECK: Validate peak frequency
+					if (!PX4_ISFINITE(peak_freq)) {
+						// Invalid peak frequency, disable this notch
+						if (nf.getNotchFreq() > 0.f) {
+							nf.disable();
+							perf_count(_dynamic_notch_filter_fft_disable_perf);
+						}
+						continue;
+					}
+#endif /* __PX4_FREERTOS */
 
 					if (peak_freq > peak_freq_min) {
 						// update filter parameters if frequency changed or forced
 						if (force || !nf.initialized() || (fabsf(nf.getNotchFreq() - peak_freq) > 0.1f)) {
+#if defined(__PX4_FREERTOS)
+							// SAFETY CHECK: Validate before calling setParameters
+							if (PX4_ISFINITE(_filter_sample_rate_hz) && (_filter_sample_rate_hz > bandwidth * 2.f)) {
+								if (!nf.setParameters(_filter_sample_rate_hz, peak_freq, bandwidth)) {
+									PX4_WARN("Failed to set FFT notch filter params: sample_rate=%.3f, freq=%.3f, bw=%.3f",
+										 (double)_filter_sample_rate_hz, (double)peak_freq, (double)bandwidth);
+								} else {
+									perf_count(_dynamic_notch_filter_fft_update_perf);
+								}
+							} else {
+								PX4_ERR("Invalid params for FFT notch: sample_rate=%.3f, bandwidth=%.3f",
+									(double)_filter_sample_rate_hz, (double)bandwidth);
+								nf.disable();
+							}
+#else
 							nf.setParameters(_filter_sample_rate_hz, peak_freq, bandwidth);
 							perf_count(_dynamic_notch_filter_fft_update_perf);
+#endif /* __PX4_FREERTOS */
 						}
 
 						_dynamic_notch_fft_available = true;
@@ -828,11 +874,32 @@ void VehicleAngularVelocity::Run()
 		while ((sensor_sub_updates < sensor_gyro_fifo_s::ORB_QUEUE_LENGTH) && _sensor_gyro_fifo_sub.update(&sensor_fifo_data)) {
 			sensor_sub_updates++;
 
+#if !defined(__PX4_FREERTOS)
 			const float inverse_dt_s = 1e6f / sensor_fifo_data.dt;
+#endif /* __PX4_FREERTOS */
 			const int N = sensor_fifo_data.samples;
 			static constexpr int FIFO_SIZE_MAX = sizeof(sensor_fifo_data.x) / sizeof(sensor_fifo_data.x[0]);
+#if defined(__PX4_FREERTOS)
+			static constexpr float SENSOR_FIFO_DT_MIN_US = 50.f;
+			static constexpr float SENSOR_FIFO_DT_MAX_US = 20'000.f;
 
+			if ((N > 0) && (N <= FIFO_SIZE_MAX)
+			    && PX4_ISFINITE(sensor_fifo_data.dt)
+			    && (sensor_fifo_data.dt >= SENSOR_FIFO_DT_MIN_US)
+			    && (sensor_fifo_data.dt <= SENSOR_FIFO_DT_MAX_US)
+			    && PX4_ISFINITE(sensor_fifo_data.scale)
+			    && (sensor_fifo_data.scale > 0.f)) {
+
+				const float inverse_dt_s = 1e6f / sensor_fifo_data.dt;
+
+				if (!PX4_ISFINITE(inverse_dt_s) || (inverse_dt_s <= 0.f)) {
+					_reset_filters = true;
+					continue;
+				}
+
+#else
 			if ((sensor_fifo_data.dt > 0) && (N > 0) && (N <= FIFO_SIZE_MAX)) {
+#endif /* __PX4_FREERTOS */
 				Vector3f angular_velocity_uncalibrated;
 				Vector3f angular_acceleration_uncalibrated;
 
@@ -936,6 +1003,20 @@ bool VehicleAngularVelocity::CalibrateAndPublish(const hrt_abstime &timestamp_sa
 		_angular_acceleration = _calibration.rotation() * angular_acceleration_uncalibrated;
 		_angular_acceleration.copyTo(angular_velocity.xyz_derivative);
 
+#if defined(__PX4_FREERTOS)
+		if (!Vector3f(angular_velocity.xyz).isAllFinite() || !Vector3f(angular_velocity.xyz_derivative).isAllFinite()) {
+			static uint32_t nan_count = 0;
+			nan_count++;
+
+			if (nan_count <= 3 || (nan_count % 500) == 0) {
+				PX4_WARN("[vehicle_angular_velocity] NaN sample dropped (total=%" PRIu32 ")", nan_count);
+			}
+
+			_reset_filters = true;
+
+			return false;
+		}
+#endif /* __PX4_FREERTOS */
 		angular_velocity.timestamp = hrt_absolute_time();
 		_vehicle_angular_velocity_pub.publish(angular_velocity);
 

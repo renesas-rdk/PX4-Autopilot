@@ -359,6 +359,19 @@ __EXPORT int		param_import(int fd);
  */
 __EXPORT int		param_load(int fd);
 
+#if defined(__PX4_FREERTOS)
+/**
+ * Load parameters from a memory buffer (BSON format), resetting first.
+ * Equivalent to param_load() but reads from a pre-loaded buffer instead of a file.
+ * Used to load params from U-Boot SDRAM scratch area without requiring CA55/RPC.
+ *
+ * @param buf		Pointer to BSON-encoded parameter data.
+ * @param size		Size of the buffer in bytes.
+ * @return		0 on success, 1 if buf is empty (no params, not an error), -1 on failure.
+ */
+__EXPORT int		param_load_buf(const void *buf, size_t size);
+#endif /* __PX4_FREERTOS */
+
 /**
  * Apply a function to each parameter.
  *
@@ -423,6 +436,20 @@ __EXPORT const char	*param_get_backup_file(void);
  * @return		Zero on success, -EWOULDBLOCK if the file is busy and blocking is false.
  */
 __EXPORT int 		param_save_default(bool blocking);
+#if defined(__PX4_FREERTOS)
+/**
+ * Save parameters asynchronously to the default file.
+ *
+ * This returns immediately after the RPC is queued. Completion is reported
+ * via the callback (invoked when the remote save finishes).
+ *
+ * @param callback	Optional completion callback
+ * @param user_data	User context passed to callback
+ * @return		Zero on success, negative error on failure
+ */
+typedef void (*param_save_async_callback_t)(int result, void *user_data);
+__EXPORT int		param_save_default_async(param_save_async_callback_t callback, void *user_data);
+#endif /* __PX4_FREERTOS */
 
 /**
  * Load parameters from the default parameter file.

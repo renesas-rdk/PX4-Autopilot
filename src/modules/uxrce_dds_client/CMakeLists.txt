@@ -78,10 +78,10 @@ else()
 			-DCMAKE_EXE_LINKER_FLAGS:STRING=${CMAKE_EXE_LINKER_FLAGS}
 			-DUCLIENT_PIC:BOOL=OFF
 			-DUCLIENT_PROFILE_TCP:BOOL=OFF
-			-DUCLIENT_PROFILE_UDP:BOOL=ON
-			-DUCLIENT_PROFILE_SERIAL:BOOL=ON
+			-DUCLIENT_PROFILE_UDP:BOOL=$<IF:$<STREQUAL:${VENDOR},renesas>,OFF,ON>
+			-DUCLIENT_PROFILE_SERIAL:BOOL=$<IF:$<STREQUAL:${VENDOR},renesas>,OFF,ON>
 			-DUCLIENT_PROFILE_DISCOVERY:BOOL=OFF
-			-DUCLIENT_PROFILE_CUSTOM_TRANSPORT:BOOL=OFF
+			-DUCLIENT_PROFILE_CUSTOM_TRANSPORT:BOOL=$<IF:$<STREQUAL:${VENDOR},renesas>,ON,OFF>
 			-DUCLIENT_PROFILE_MULTITHREAD:BOOL=OFF
 			-DUCLIENT_PROFILE_SHARED_MEMORY:BOOL=OFF
 			-DUCLIENT_PLATFORM_POSIX:BOOL=ON
@@ -113,6 +113,7 @@ else()
 	add_dependencies(microxrceddsclient libmicrocdr)
 	add_dependencies(microxrceddsclient libmicroxrceddsclient_project)
 	target_include_directories(microxrceddsclient INTERFACE ${microxrceddsclient_build_dir}/include)
+	target_link_libraries(microxrceddsclient INTERFACE libmicroxrceddsclient libmicrocdr)
 
 
 	add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/dds_topics.h
@@ -134,10 +135,13 @@ else()
 		STACK_MAIN 9000
 		INCLUDES
 			${CMAKE_CURRENT_SOURCE_DIR}
+			${PX4_SOURCE_DIR}/../rzv/linaro/open-amp/lib/include
+			${PX4_SOURCE_DIR}/../rzv/linaro/libmetal/include
 		COMPILE_FLAGS
 			#-O0
 			# -DDEBUG_BUILD
 			${MAX_CUSTOM_OPT_LEVEL}
+			-Wno-cast-align
 		SRCS
 			${CMAKE_CURRENT_BINARY_DIR}/dds_topics.h
 			uxrce_dds_client.cpp
@@ -146,6 +150,8 @@ else()
 			vehicle_command_srv.h
 			srv_base.cpp
 			srv_base.h
+			openamp_transport.cpp
+			openamp_transport.h
 		DEPENDS
 			git_micro_xrce_dds_client
 			libmicroxrceddsclient_project
@@ -158,4 +164,6 @@ else()
 		MODULE_CONFIG
 			module.yaml
 		)
+
+	target_link_libraries(modules__uxrce_dds_client PRIVATE microxrceddsclient)
 endif()

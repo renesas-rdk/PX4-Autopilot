@@ -287,3 +287,8 @@ px4_add_module(
 if(BUILD_TESTING)
 	add_subdirectory(test)
 endif()
+
+# __PX4_FREERTOS compile-time stack overflow detector
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+	target_compile_options(modules__ekf2 PRIVATE -Wframe-larger-than=8192 -Wstack-usage=8192)
+endif()

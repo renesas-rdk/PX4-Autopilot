@@ -37,6 +37,12 @@
 #include <mathlib/math/Limits.hpp>
 #include <mathlib/math/Functions.hpp>
 
+#if defined(__PX4_FREERTOS)
+#define PX4_ARM_FLOAT_TO_Q15(pSrc, pDst, blockSize) GYRO_FFT_SAFE_ARM_FLOAT_TO_Q15((pSrc), (pDst), (blockSize))
+#define PX4_ARM_MULT_Q15(pSrcA, pSrcB, pDst, blockSize) GYRO_FFT_SAFE_ARM_MULT_Q15((pSrcA), (pSrcB), (pDst), (blockSize))
+#define PX4_ARM_RFFT_Q15(S, pSrc, pDst) GYRO_FFT_SAFE_ARM_RFFT_Q15((S), (pSrc), (pDst))
+#endif /* __PX4_FREERTOS */
+
 using namespace matrix;
 
 GyroFFT::GyroFFT() :
@@ -144,7 +150,11 @@ bool GyroFFT::init()
 		// init Hanning window
 		for (int n = 0; n < _imu_gyro_fft_len; n++) {
 			const float hanning_value = 0.5f * (1.f - cosf(2.f * M_PI_F * n / (_imu_gyro_fft_len - 1)));
+#if defined(__PX4_FREERTOS)
+			PX4_ARM_FLOAT_TO_Q15(&hanning_value, &_hanning_window[n], 1);
+#else
 			arm_float_to_q15(&hanning_value, &_hanning_window[n], 1);
+#endif /* __PX4_FREERTOS */
 		}
 
 		if (!SensorSelectionUpdate(true)) {
@@ -410,8 +420,13 @@ void GyroFFT::Update(const hrt_abstime &timestamp_sample, int16_t *input[], uint
 			if ((buffer_index >= _imu_gyro_fft_len) && !_fft_updated) {
 				perf_begin(_fft_perf);
 
+#if defined(__PX4_FREERTOS)
+				PX4_ARM_MULT_Q15(gyro_data_buffer[axis], _hanning_window, _fft_input_buffer, _imu_gyro_fft_len);
+				PX4_ARM_RFFT_Q15(&_rfft_q15, _fft_input_buffer, _fft_outupt_buffer);
+#else
 				arm_mult_q15(gyro_data_buffer[axis], _hanning_window, _fft_input_buffer, _imu_gyro_fft_len);
 				arm_rfft_q15(&_rfft_q15, _fft_input_buffer, _fft_outupt_buffer);
+#endif /* __PX4_FREERTOS */
 
 				_fft_updated = true;
 
@@ -552,6 +567,15 @@ void GyroFFT::UpdateOutput(const hrt_abstime &timestamp_sample, int axis, float 
 	float *peak_frequencies_publish[] { _sensor_gyro_fft.peak_frequencies_x, _sensor_gyro_fft.peak_frequencies_y, _sensor_gyro_fft.peak_frequencies_z };
 	float *peak_snr_publish[]         { _sensor_gyro_fft.peak_snr_x,         _sensor_gyro_fft.peak_snr_y,         _sensor_gyro_fft.peak_snr_z };
 
+#if defined(__PX4_FREERTOS)
+	const hrt_abstime now = hrt_absolute_time();
+	hrt_abstime ts = timestamp_sample;
+
+	if ((ts == 0) || (ts > now)) {
+		ts = now;
+	}
+#endif /* __PX4_FREERTOS */
+
 	// new peak: r, old peak: c
 	float peak_frequencies_diff[MAX_NUM_PEAKS][MAX_NUM_PEAKS];
 
@@ -607,9 +631,13 @@ void GyroFFT::UpdateOutput(const hrt_abstime &timestamp_sample, int axis, float 
 				peak_frequencies_publish[axis][closest_prev_peak] = peak_frequency;
 				peak_snr_publish[axis][closest_prev_peak] = peak_snr[closest_new_peak];
 				peaks_copied++;
-
+#if defined(__PX4_FREERTOS)
+				_last_update[axis][closest_prev_peak] = ts;
+				_sensor_gyro_fft.timestamp_sample = ts;
+#else
 				_last_update[axis][closest_prev_peak] = timestamp_sample;
 				_sensor_gyro_fft.timestamp_sample = timestamp_sample;
+#endif /* __PX4_FREERTOS */
 				_publish = true;
 
 				// clear
@@ -627,7 +655,11 @@ void GyroFFT::UpdateOutput(const hrt_abstime &timestamp_sample, int axis, float 
 
 	// clear any stale entries
 	for (int peak_out = 0; peak_out < MAX_NUM_PEAKS; peak_out++) {
+#if defined(__PX4_FREERTOS)
+		if ((ts < _last_update[axis][peak_out]) || (ts - _last_update[axis][peak_out] > 100_ms)) {
+#else
 		if (timestamp_sample - _last_update[axis][peak_out] > 100_ms) {
+#endif /* __PX4_FREERTOS */
 			peak_frequencies_publish[axis][peak_out] = NAN;
 			peak_snr_publish[axis][peak_out] = NAN;
 
@@ -640,7 +672,11 @@ void GyroFFT::UpdateOutput(const hrt_abstime &timestamp_sample, int axis, float 
 		for (int peak_new = 0; peak_new < num_peaks_found; peak_new++) {
 			if (PX4_ISFINITE(peak_frequencies[peak_new]) && (peak_frequencies[peak_new] > 0)) {
 				int oldest_slot = -1;
+#if defined(__PX4_FREERTOS)
+				hrt_abstime oldest = ts;
+#else
 				hrt_abstime oldest = timestamp_sample;
+#endif /* __PX4_FREERTOS */
 
 				// find oldest slot and replace with new peak frequency
 				for (int peak_prev = 0; peak_prev < MAX_NUM_PEAKS; peak_prev++) {
@@ -657,9 +693,13 @@ void GyroFFT::UpdateOutput(const hrt_abstime &timestamp_sample, int axis, float 
 					if (peak_frequency > 0) {
 						peak_frequencies_publish[axis][oldest_slot] = peak_frequency;
 						peak_snr_publish[axis][oldest_slot] = peak_snr[peak_new];
-
+#if defined(__PX4_FREERTOS)
+						_last_update[axis][oldest_slot] = ts;
+						_sensor_gyro_fft.timestamp_sample = ts;
+#else
 						_last_update[axis][oldest_slot] = timestamp_sample;
 						_sensor_gyro_fft.timestamp_sample = timestamp_sample;
+#endif /* __PX4_FREERTOS */
 						_publish = true;
 					}
 				}

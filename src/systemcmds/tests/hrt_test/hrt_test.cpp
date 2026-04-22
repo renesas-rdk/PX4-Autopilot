@@ -54,6 +54,12 @@ px4::AppState HRTTest::appState;
 static struct hrt_call t1;
 static int update_interval = 1;
 
+#if defined(__PX4_FREERTOS)
+extern "C" __EXPORT __attribute__((weak)) void px4_hrt_test_dump_platform_diagnostics()
+{
+}
+
+#endif /* __PX4_FREERTOS */
 static void timer_expired(void *arg)
 {
 	static int i = 0;
@@ -90,6 +96,9 @@ int HRTTest::main()
 	PX4_INFO("HRT_CALL - %d\n", hrt_called(&t1));
 	hrt_cancel(&t1);
 	PX4_INFO("HRT_CALL + %d\n", hrt_called(&t1));
+#if defined(__PX4_FREERTOS)
+	px4_hrt_test_dump_platform_diagnostics();
+#endif /* __PX4_FREERTOS */
 
 	return 0;
 }

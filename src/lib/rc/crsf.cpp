@@ -43,6 +43,12 @@
 #define CRSF_VERBOSE(...)
 #endif
 
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#include <px4_platform_common/px4_config.h>
+#include <px4_platform_common/posix.h>
+#include "uart_rc_switch.h"
+#endif /* __PX4_FREERTOS */
 #include <drivers/drv_hrt.h>
 #include <termios.h>
 #include <string.h>
@@ -144,6 +150,19 @@ uint8_t crsf_frame_CRC(const crsf_frame_t &frame);
 int
 crsf_config(int uart_fd)
 {
+#if defined(__PX4_FREERTOS)
+    	(void)uart_fd;
+	uart_set_rc_serial_mode(true);
+
+	if (uart_reopen_rc_channel(CRSF_BAUDRATE) != 0) {
+		errno = EIO;
+		return -1;
+	}
+
+	uart_rc_buffer_flush(0);
+	errno = 0;
+	return 0;
+#else
 	struct termios t;
 
 	/* no parity, one stop bit */
@@ -151,6 +170,7 @@ crsf_config(int uart_fd)
 	cfsetspeed(&t, CRSF_BAUDRATE);
 	t.c_cflag &= ~(CSTOPB | PARENB);
 	return tcsetattr(uart_fd, TCSANOW, &t);
+#endif /* __PX4_FREERTOS */
 }
 
 /**

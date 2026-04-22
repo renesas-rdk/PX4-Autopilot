@@ -150,7 +150,18 @@ void GyroCalibration::Run()
 			if (_gyro_calibration[gyro].device_id() == sensor_gyro.device_id) {
 				_gyro_calibration[gyro].SensorCorrectionsUpdate();
 				const Vector3f val{Vector3f{sensor_gyro.x, sensor_gyro.y, sensor_gyro.z} - _gyro_calibration[gyro].thermal_offset()};
+#if defined(__PX4_FREERTOS)
+				static constexpr float kMaxGyroSampleRadS = 1.0f;
+				if (val.norm_squared() < sq(kMaxGyroSampleRadS)) {
+					_gyro_mean[gyro].update(val);
+				} else {
+					PX4_DEBUG("gyro %d spike rejected: [%.3f %.3f %.3f] rad/s",
+						  gyro, (double)val(0), (double)val(1), (double)val(2));
+					_gyro_mean[gyro].reset();
+				}
+#else
 				_gyro_mean[gyro].update(val);
+#endif /* __PX4_FREERTOS */
 				_gyro_last_update[gyro] = sensor_gyro.timestamp;
 
 			} else {
@@ -222,6 +233,19 @@ void GyroCalibration::Run()
 				const Vector3f old_offset{_gyro_calibration[gyro].offset()};
 				const Vector3f new_offset{_gyro_mean[gyro].mean()};
 
+#if defined(__PX4_FREERTOS)
+				static constexpr float kMaxBiasNormRadS = 2.0f;
+
+				if (new_offset.norm_squared() > sq(kMaxBiasNormRadS)) {
+					PX4_WARN("gyro %d (%" PRIu32 ") bias sanity FAIL: "
+						 "[%.3f, %.3f, %.3f] norm=%.2f > %.1f rad/s — discarding",
+						 gyro, _gyro_calibration[gyro].device_id(),
+						 (double)new_offset(0), (double)new_offset(1), (double)new_offset(2),
+						 (double)new_offset.norm(), (double)kMaxBiasNormRadS);
+					_gyro_mean[gyro].reset();
+					continue;
+				}
+#endif // __PX4_FREERTOS
 				bool change_exceeds_stddev = false;
 				bool variance_significantly_better = false;
 

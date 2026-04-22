@@ -54,3 +54,10 @@ endif()
 if(${PX4_PLATFORM} MATCHES "nuttx")
 	target_link_libraries(rc PRIVATE nuttx_fs)
 endif()
+
+# Add RZV board directory to include path for FreeRTOS platform (uart_rc_switch.h)
+if(DEFINED __PX4_FREERTOS OR ${PX4_BOARD} MATCHES "renesas_rzv")
+	target_include_directories(rc PRIVATE
+		${PX4_SOURCE_DIR}/boards/renesas/rzv/src/board
+	)
+endif()

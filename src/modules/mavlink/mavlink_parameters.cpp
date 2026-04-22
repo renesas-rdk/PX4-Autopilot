@@ -41,6 +41,9 @@
  */
 
 #include <stdio.h>
+#if defined(__PX4_FREERTOS)
+#include <mathlib/mathlib.h>
+#endif /* __PX4_FREERTOS */
 
 #include "mavlink_parameters.h"
 #include "mavlink_main.h"
@@ -130,6 +133,13 @@ MavlinkParametersManager::handle_message(const mavlink_message_t *msg)
 					PX4_ERR("param types mismatch param: %s", name);
 
 				} else {
+#if defined(__PX4_FREERTOS)
+					if (set.param_type == MAV_PARAM_TYPE_REAL32 && !PX4_ISFINITE(set.param_value)) {
+						PX4_WARN("Ignoring NaN param set for %s", name);
+						send_param(param);
+						return;
+					}
+#endif /* __PX4_FREERTOS */
 					// According to the mavlink spec we should always acknowledge a write operation.
 					param_set(param, &(set.param_value));
 					send_param(param);

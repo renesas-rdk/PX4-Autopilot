@@ -1171,6 +1171,9 @@ void SimulatorMavlink::run()
 	// sender thread should run immediately after new outputs are available
 	//  to send the lockstep update to the simulation
 	param.sched_priority = SCHED_PRIORITY_ACTUATOR_OUTPUTS + 1;
+#if defined(__PX4_FREERTOS)
+	param.sched_priority = px4_task_adjust_priority(param.sched_priority);
+#endif /* __PX4_FREERTOS */
 	(void)pthread_attr_setschedparam(&sender_thread_attr, &param);
 
 	struct pollfd fds[2] = {};

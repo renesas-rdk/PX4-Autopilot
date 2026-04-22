@@ -172,9 +172,11 @@ endif()
 set(OPTIONAL_BOARD_RC)
 list(APPEND OPTIONAL_BOARD_RC
 	rc.board_defaults
+	rc.board_defaults.cmds
 	rc.board_sensors
 	rc.board_extras
 	rc.board_mavlink
+	rc.offline_sensor_check
 )
 
 foreach(board_rc_file ${OPTIONAL_BOARD_RC})
@@ -361,6 +363,7 @@ if("${CONFIG_FS_CROMFS}" STREQUAL "y")
 	add_library(romfs STATIC nsh_romfsimg.c)
 	add_dependencies(romfs prebuild_targets)
 	set_target_properties(romfs PROPERTIES LINKER_LANGUAGE C)
+	px4_register_archive(romfs)
 
 elseif("${CONFIG_FS_ROMFS}" STREQUAL "y")
 	# create romfs.img
@@ -401,6 +404,7 @@ elseif("${CONFIG_FS_ROMFS}" STREQUAL "y")
 	add_library(romfs STATIC nsh_romfsimg.c)
 	add_dependencies(romfs prebuild_targets)
 	set_target_properties(romfs PROPERTIES LINKER_LANGUAGE C)
+	px4_register_archive(romfs)
 endif()
 
 

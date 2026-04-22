@@ -262,6 +262,20 @@ MavlinkMissionManager::update_safepoint_count(dm_item_t safepoint_dataman_id, un
 void
 MavlinkMissionManager::send_mission_ack(uint8_t sysid, uint8_t compid, uint8_t type, uint32_t opaque_id)
 {
+#if defined(__PX4_FREERTOS)
+	// Use static buffer to save stack space
+	static mavlink_message_t msgbuf;
+
+	mavlink_msg_mission_ack_send_buf(&msgbuf,
+	                                 _mavlink.get_channel(),
+	                                 sysid,
+	                                 compid,
+	                                 type,
+	                                 _mission_type,
+	                                 opaque_id);
+
+	PX4_DEBUG("WPM: Send MISSION_ACK type %u to ID %u", type, sysid);
+#else
 	mavlink_mission_ack_t wpa{};
 
 	wpa.target_system = sysid;
@@ -273,11 +287,26 @@ MavlinkMissionManager::send_mission_ack(uint8_t sysid, uint8_t compid, uint8_t t
 	mavlink_msg_mission_ack_send_struct(_mavlink.get_channel(), &wpa);
 
 	PX4_DEBUG("WPM: Send MISSION_ACK type %u to ID %u", wpa.type, wpa.target_system);
+#endif /* __PX4_FREERTOS */
 }
 
 void
 MavlinkMissionManager::send_mission_current(uint16_t seq)
 {
+#if defined(__PX4_FREERTOS)
+	// Use static buffer to save stack space
+	static mavlink_message_t msgbuf;
+
+	mavlink_msg_mission_current_send_buf(&msgbuf,
+	                                     _mavlink.get_channel(),
+	                                     seq,
+	                                     _count[MAV_MISSION_TYPE_MISSION] > 0 ? _count[MAV_MISSION_TYPE_MISSION] : UINT16_MAX,
+	                                     0, // mission_state (0 = MISSION_STATE_UNKNOWN)
+	                                     0, // mission_mode (0 = Unknown)
+	                                     _crc32[MAV_MISSION_TYPE_MISSION],
+	                                     _crc32[MAV_MISSION_TYPE_FENCE],
+	                                     _crc32[MAV_MISSION_TYPE_RALLY]);
+#else
 	mavlink_mission_current_t wpc{};
 	wpc.seq = seq;
 	wpc.total = _count[MAV_MISSION_TYPE_MISSION] > 0 ? _count[MAV_MISSION_TYPE_MISSION] : UINT16_MAX;
@@ -285,6 +314,7 @@ MavlinkMissionManager::send_mission_current(uint16_t seq)
 	wpc.fence_id = _crc32[MAV_MISSION_TYPE_FENCE];
 	wpc.rally_points_id = _crc32[MAV_MISSION_TYPE_RALLY];
 	mavlink_msg_mission_current_send_struct(_mavlink.get_channel(), &wpc);
+#endif /* __PX4_FREERTOS */
 
 	PX4_DEBUG("WPM: Send MISSION_CURRENT seq %d", seq);
 }
@@ -295,6 +325,20 @@ MavlinkMissionManager::send_mission_count(uint8_t sysid, uint8_t compid, uint16_
 {
 	_time_last_sent = hrt_absolute_time();
 
+#if defined(__PX4_FREERTOS)
+	// Use static buffer to save stack space (avoids ~280B allocation on stack)
+	static mavlink_message_t msgbuf;
+
+	mavlink_msg_mission_count_send_buf(&msgbuf,
+	                                   _mavlink.get_channel(),
+	                                   sysid,
+	                                   compid,
+	                                   count,
+	                                   mission_type,
+	                                   opaque_id);
+
+	PX4_DEBUG("WPM: Send MISSION_COUNT %u to ID %u, mission type=%i", count, sysid, mission_type);
+#else
 	mavlink_mission_count_t wpc{};
 
 	wpc.target_system = sysid;
@@ -306,6 +350,7 @@ MavlinkMissionManager::send_mission_count(uint8_t sysid, uint8_t compid, uint16_
 	mavlink_msg_mission_count_send_struct(_mavlink.get_channel(), &wpc);
 
 	PX4_DEBUG("WPM: Send MISSION_COUNT %u to ID %u, mission type=%i", wpc.count, wpc.target_system, mission_type);
+#endif /* __PX4_FREERTOS */
 }
 
 void
@@ -358,6 +403,10 @@ MavlinkMissionManager::send_mission_item(uint8_t sysid, uint8_t compid, uint16_t
 
 	if (read_success) {
 		_time_last_sent = hrt_absolute_time();
+#if defined(__PX4_FREERTOS)
+		// Use static buffer to save stack space (~280 bytes per call)
+		static mavlink_message_t msgbuf;
+#endif /* __PX4_FREERTOS */
 
 		if (_int_mode) {
 			mavlink_mission_item_int_t wp{};
@@ -368,7 +417,27 @@ MavlinkMissionManager::send_mission_item(uint8_t sysid, uint8_t compid, uint16_t
 			wp.seq = seq;
 			wp.current = (_current_seq == seq) ? 1 : 0;
 
+#if defined(__PX4_FREERTOS)
+			mavlink_msg_mission_item_int_send_buf(&msgbuf,
+			                                      _mavlink.get_channel(),
+			                                      wp.target_system,
+			                                      wp.target_component,
+			                                      wp.seq,
+			                                      wp.frame,
+			                                      wp.command,
+			                                      wp.current,
+			                                      wp.autocontinue,
+			                                      wp.param1,
+			                                      wp.param2,
+			                                      wp.param3,
+			                                      wp.param4,
+			                                      wp.x,
+			                                      wp.y,
+			                                      wp.z,
+			                                      wp.mission_type);
+#else
 			mavlink_msg_mission_item_int_send_struct(_mavlink.get_channel(), &wp);
+#endif /* __PX4_FREERTOS */
 
 			PX4_DEBUG("WPM: Send MISSION_ITEM_INT seq %u to ID %u", wp.seq, wp.target_system);
 
@@ -381,7 +450,27 @@ MavlinkMissionManager::send_mission_item(uint8_t sysid, uint8_t compid, uint16_t
 			wp.seq = seq;
 			wp.current = (_current_seq == seq) ? 1 : 0;
 
+#if defined(__PX4_FREERTOS)
+			mavlink_msg_mission_item_send_buf(&msgbuf,
+			                                  _mavlink.get_channel(),
+			                                  wp.target_system,
+			                                  wp.target_component,
+			                                  wp.seq,
+			                                  wp.frame,
+			                                  wp.command,
+			                                  wp.current,
+			                                  wp.autocontinue,
+			                                  wp.param1,
+			                                  wp.param2,
+			                                  wp.param3,
+			                                  wp.param4,
+			                                  wp.x,
+			                                  wp.y,
+			                                  wp.z,
+			                                  wp.mission_type);
+#else
 			mavlink_msg_mission_item_send_struct(_mavlink.get_channel(), &wp);
+#endif /* __PX4_FREERTOS */
 
 			PX4_DEBUG("WPM: Send MISSION_ITEM seq %u to ID %u", wp.seq, wp.target_system);
 		}
@@ -441,6 +530,31 @@ MavlinkMissionManager::send_mission_request(uint8_t sysid, uint8_t compid, uint1
 {
 	if (seq < current_max_item_count()) {
 		_time_last_sent = hrt_absolute_time();
+#if defined(__PX4_FREERTOS)
+		// Use static buffer to save stack space
+		static mavlink_message_t msgbuf;
+
+		if (_int_mode) {
+			mavlink_msg_mission_request_int_send_buf(&msgbuf,
+			                                         _mavlink.get_channel(),
+			                                         sysid,
+			                                         compid,
+			                                         seq,
+			                                         _mission_type);
+
+			PX4_DEBUG("WPM: Send MISSION_REQUEST_INT seq %u to ID %u", seq, sysid);
+
+		} else {
+			mavlink_msg_mission_request_send_buf(&msgbuf,
+			                                     _mavlink.get_channel(),
+			                                     sysid,
+			                                     compid,
+			                                     seq,
+			                                     _mission_type);
+
+			PX4_DEBUG("WPM: Send MISSION_REQUEST seq %u to ID %u", seq, sysid);
+		}
+#else
 
 		if (_int_mode) {
 			mavlink_mission_request_int_t wpr{};
@@ -464,6 +578,7 @@ MavlinkMissionManager::send_mission_request(uint8_t sysid, uint8_t compid, uint1
 
 			PX4_DEBUG("WPM: Send MISSION_REQUEST seq %u to ID %u", wpr.seq, wpr.target_system);
 		}
+#endif /* __PX4_FREERTOS */
 
 	} else {
 		_mavlink.send_statustext_critical("ERROR: Waypoint index exceeds list capacity\t");
@@ -477,6 +592,16 @@ MavlinkMissionManager::send_mission_request(uint8_t sysid, uint8_t compid, uint1
 void
 MavlinkMissionManager::send_mission_item_reached(uint16_t seq)
 {
+#if defined(__PX4_FREERTOS)
+	// Use static buffer to save stack space
+	static mavlink_message_t msgbuf;
+
+	mavlink_msg_mission_item_reached_send_buf(&msgbuf,
+	                                          _mavlink.get_channel(),
+	                                          seq);
+
+	PX4_DEBUG("WPM: Send MISSION_ITEM_REACHED reached_seq %u", seq);
+#else
 	mavlink_mission_item_reached_t wp_reached{};
 
 	wp_reached.seq = seq;
@@ -484,6 +609,7 @@ MavlinkMissionManager::send_mission_item_reached(uint16_t seq)
 	mavlink_msg_mission_item_reached_send_struct(_mavlink.get_channel(), &wp_reached);
 
 	PX4_DEBUG("WPM: Send MISSION_ITEM_REACHED reached_seq %u", wp_reached.seq);
+#endif /* __PX4_FREERTOS */
 }
 
 void

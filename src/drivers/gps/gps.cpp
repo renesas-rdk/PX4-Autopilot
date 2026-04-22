@@ -79,6 +79,8 @@
 
 #ifdef __PX4_LINUX
 #include <linux/spi/spidev.h>
+#elif defined(__PX4_FREERTOS)
+#include <posix_compat/spi/spidev.h>
 #endif /* __PX4_LINUX */
 
 using namespace device;

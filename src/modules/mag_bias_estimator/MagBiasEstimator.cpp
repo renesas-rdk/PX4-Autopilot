@@ -33,17 +33,36 @@
 
 #include "MagBiasEstimator.hpp"
 
+#if defined(__PX4_FREERTOS)
+#include <FreeRTOS.h>
+#include <task.h>
+#endif /* __PX4_FREERTOS */
+
 using namespace time_literals;
 using matrix::Vector3f;
 
 namespace mag_bias_estimator
 {
+#if defined(__PX4_FREERTOS)
+namespace
+{
+constexpr int MAX_MAG_UPDATES_PER_CYCLE = 4;
+constexpr hrt_abstime STARTUP_DELAY = 500_ms;
+}
+#endif /* __PX4_FREERTOS */
 
 MagBiasEstimator::MagBiasEstimator() :
 	ModuleParams(nullptr),
+#if defined(__PX4_FREERTOS)
+	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::mag_bias)
+#else
 	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::lp_default)
+#endif /* __PX4_FREERTOS */
 {
 	_magnetometer_bias_estimate_pub.advertise();
+#if defined(__PX4_FREERTOS)
+	_startup_time = hrt_absolute_time();
+#endif /* __PX4_FREERTOS */
 }
 
 MagBiasEstimator::~MagBiasEstimator()
@@ -80,6 +99,27 @@ void MagBiasEstimator::Run()
 		ScheduleClear();
 		exit_and_cleanup();
 	}
+#if defined(__PX4_FREERTOS)
+	{
+		static hrt_abstime s_first_run_time = 0;
+		static bool s_hwm_logged = false;
+
+		if (s_first_run_time == 0) {
+			s_first_run_time = hrt_absolute_time();
+		}
+
+		if (!s_hwm_logged && (hrt_elapsed_time(&s_first_run_time) > 5_s)) {
+			UBaseType_t hwm = uxTaskGetStackHighWaterMark(NULL);
+			PX4_INFO("mag_bias wq:mag_bias stack HWM = %u words free", (unsigned)hwm);
+			s_hwm_logged = true;
+		}
+	}
+
+	// Early exit if disabled
+	if (_param_mbe_enable.get() == 0) {
+		return;
+	}
+#endif // __PX4_FREERTOS
 
 	if (_vehicle_status_sub.updated()) {
 		vehicle_status_s vehicle_status;
@@ -145,6 +185,30 @@ void MagBiasEstimator::Run()
 		return;
 	}
 
+#if defined(__PX4_FREERTOS)
+	const hrt_abstime now = hrt_absolute_time();
+
+	if ((now - _startup_time) < STARTUP_DELAY) {
+		return;
+	}
+
+	if (!_vehicle_angular_velocity_sub.advertised()) {
+		return;
+	}
+
+	bool magnetometer_available = false;
+
+	for (auto &sub : _sensor_mag_subs) {
+		if (sub.advertised()) {
+			magnetometer_available = true;
+			break;
+		}
+	}
+
+	if (!magnetometer_available) {
+		return;
+	}
+#endif /* __PX4_FREERTOS */
 	perf_begin(_cycle_perf);
 
 	// Assume a constant angular velocity during two mag samples
@@ -160,7 +224,11 @@ void MagBiasEstimator::Run()
 			int sensor_mag_updates = 0;
 			sensor_mag_s sensor_mag;
 
+#if defined(__PX4_FREERTOS)
+			while ((sensor_mag_updates < MAX_MAG_UPDATES_PER_CYCLE) && _sensor_mag_subs[mag_index].update(&sensor_mag)) {
+#else
 			while ((sensor_mag_updates < sensor_mag_s::ORB_QUEUE_LENGTH) && _sensor_mag_subs[mag_index].update(&sensor_mag)) {
+#endif /* __PX4_FREERTOS */
 				sensor_mag_updates++;
 				updated = true;
 
@@ -221,6 +289,13 @@ void MagBiasEstimator::Run()
 					}
 				}
 			}
+#if defined(__PX4_FREERTOS)
+			if (sensor_mag_updates >= MAX_MAG_UPDATES_PER_CYCLE) {
+				while (_sensor_mag_subs[mag_index].updated()) {
+					_sensor_mag_subs[mag_index].update(&sensor_mag);
+				}
+			}
+#endif /* __PX4_FREERTOS */
 		}
 
 		if (updated) {

@@ -355,6 +355,30 @@ bool MavlinkLogHandler::create_log_list_file()
 {
 	perf_begin(_create_file_elapsed);
 
+#if defined(__PX4_FREERTOS)
+	{
+		struct stat loglist_st;
+
+		if (stat(kLogListFilePath, &loglist_st) == 0 && loglist_st.st_size > 0) {
+			FILE *fp = fopen(kLogListFilePath, "r");
+
+			if (fp) {
+				_num_logs = 0;
+				char line[256];
+
+				while (fgets(line, sizeof(line), fp)) {
+					if (line[0] != '\0' && line[0] != '\n') { _num_logs++; }
+				}
+
+				fclose(fp);
+				PX4_DEBUG("log list reused: %u entries", _num_logs);
+				perf_end(_create_file_elapsed);
+				return (_num_logs > 0);
+			}
+		}
+	}
+#endif /* __PX4_FREERTOS */
+
 	// clean up old file
 	unlink(kLogListFilePath);
 	_num_logs = 0;

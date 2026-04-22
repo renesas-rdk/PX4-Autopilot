@@ -56,6 +56,10 @@ struct print_load_s {
 	uint64_t new_time{0};
 	uint64_t interval_start_time{0};
 	uint64_t last_times[CONFIG_FS_PROCFS_MAX_TASKS] {};
+#if defined(__PX4_FREERTOS)
+	uint32_t task_numbers[CONFIG_FS_PROCFS_MAX_TASKS] {};
+	uint64_t idle_time_us_total{0};
+#endif /* __PX4_FREERTOS */
 	float interval_time_us{0.f};
 };
 

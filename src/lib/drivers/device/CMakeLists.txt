@@ -44,6 +44,9 @@ elseif((${PX4_PLATFORM} MATCHES "qurt"))
 	list(APPEND SRCS_PLATFORM qurt/I2C.cpp)
 	list(APPEND SRCS_PLATFORM qurt/SPI.cpp)
 	list(APPEND SRCS_PLATFORM qurt/uart.c)
+elseif(EXISTS "${PX4_BOARD_DIR}/src/hal/drivers/rzv_fsp")
+	# Renesas RZV FreeRTOS platform — use FSP-backed I2C/SPI cdev wrappers
+	list(APPEND SRCS_PLATFORM rzv/I2C.cpp rzv/SPI.cpp)
 elseif(UNIX AND NOT APPLE) #TODO: add linux PX4 platform type
 	# Linux I2Cdev and SPIdev
 	list(APPEND SRCS_PLATFORM

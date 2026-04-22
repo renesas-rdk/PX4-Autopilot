@@ -34,6 +34,9 @@
 #include "GhstRc.hpp"
 
 #include <termios.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/posix.h>
+#endif /* __PX4_FREERTOS */
 #include <math.h>
 
 GhstRc::GhstRc(const char *device) :

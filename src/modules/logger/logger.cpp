@@ -68,6 +68,10 @@
 #include <component_information/checksums.h>
 
 //#define DBGPRINT //write status output every few seconds
+#if defined(__PX4_FREERTOS)
+extern "C" int rzv_remote_fs_session_open(uint64_t timestamp_us, char *path_out, size_t path_size);
+extern "C" int rzv_remote_fs_session_close(int32_t fd);
+#endif /* __PX4_FREERTOS */
 
 static_assert(uORB::orb_untokenized_fields_max_length < sizeof(ulog_message_format_s::format) -
 	      HEATSHRINK_DECODER_INPUT_BUFFER_SIZE(_),
@@ -141,6 +145,14 @@ namespace logger
 {
 
 constexpr const char *Logger::LOG_ROOT[(int)LogType::Count];
+#if defined(__PX4_FREERTOS)
+static bool is_transient_log_root_error(int err)
+{
+	/* ENOTCONN: CA55 RPC endpoint not ready (immediate return now that fs_rpc no longer blocks
+	 * 30s — logger will retry in the main loop once CA55 becomes available). */
+	return err == EIO || err == ENXIO || err == ETIMEDOUT || err == EAGAIN || err == ENOENT || err == ENOTCONN;
+}
+#endif /* __PX4_FREERTOS */
 
 int Logger::custom_command(int argc, char *argv[])
 {
@@ -522,7 +534,16 @@ bool Logger::initialize_topics()
 		int mkdir_ret = mkdir(LOG_ROOT[(int)LogType::Mission], S_IRWXU | S_IRWXG | S_IRWXO);
 
 		if (mkdir_ret != 0 && errno != EEXIST) {
+#if defined(__PX4_FREERTOS)
+			if (is_transient_log_root_error(errno)) {
+				PX4_DEBUG("log root dir not ready yet: %s (%i)", LOG_ROOT[(int)LogType::Mission], errno);
+
+			} else {
+				PX4_ERR("failed creating log root dir: %s (%i)", LOG_ROOT[(int)LogType::Mission], errno);
+			}
+#else
 			PX4_ERR("failed creating log root dir: %s (%i)", LOG_ROOT[(int)LogType::Mission], errno);
+#endif /* __PX4_FREERTOS */
 		}
 	}
 
@@ -573,24 +594,59 @@ void Logger::run()
 {
 	PX4_INFO("logger started (mode=%s)", configured_backend_mode());
 
+#if defined(__PX4_FREERTOS)
+	/* On FreeRTOS the RPC endpoint may not be ready yet (CA55 is still booting).
+	 * Track whether LOG_ROOT exists so the main loop can retry without blocking. */
+	bool log_root_ready = false;
+#endif
+
 	if (_writer.backend() & LogWriter::BackendFile) {
 		int mkdir_ret = mkdir(LOG_ROOT[(int)LogType::Full], S_IRWXU | S_IRWXG | S_IRWXO);
 
 		if (mkdir_ret == 0) {
 			PX4_INFO("log root dir created: %s", LOG_ROOT[(int)LogType::Full]);
+#if defined(__PX4_FREERTOS)
+			log_root_ready = true;
 
+		} else if (errno == EEXIST) {
+			log_root_ready = true;
+#else
 		} else if (errno != EEXIST) {
 			PX4_ERR("failed creating log root dir: %s (%i)", LOG_ROOT[(int)LogType::Full], errno);
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+		} else {
+			if (is_transient_log_root_error(errno)) {
+				PX4_DEBUG("log root dir not ready yet: %s (%i), will retry in main loop",
+					  LOG_ROOT[(int)LogType::Full], errno);
+				(void)0; /* log_root_ready stays false */
+			} else {
+				PX4_ERR("failed creating log root dir: %s (%i)", LOG_ROOT[(int)LogType::Full], errno);
+
+				if ((_writer.backend() & ~LogWriter::BackendFile) == 0) {
+					return;
+				}
+#else
 			if ((_writer.backend() & ~LogWriter::BackendFile) == 0) {
 				return;
+#endif /* __PX4_FREERTOS */
 			}
 		}
 
+#if !defined(__PX4_FREERTOS)
 		if (util::check_free_space(LOG_ROOT[(int)LogType::Full], _param_sdlog_dirs_max.get(), _mavlink_log_pub,
 					   _file_name[(int)LogType::Full].sess_dir_index) == 1) {
 			return;
 		}
+#else
+		if (log_root_ready) {
+			if (util::check_free_space(LOG_ROOT[(int)LogType::Full], _param_sdlog_dirs_max.get(), _mavlink_log_pub,
+						   _file_name[(int)LogType::Full].sess_dir_index) == 1) {
+				return;
+			}
+		}
+#endif /* __PX4_FREERTOS */
 	}
 
 	uORB::Subscription parameter_update_sub(ORB_ID(parameter_update));
@@ -696,6 +752,19 @@ void Logger::run()
 	bool was_started = false;
 
 	while (!should_exit()) {
+#if defined(__PX4_FREERTOS)
+		if (!log_root_ready && (_writer.backend() & LogWriter::BackendFile)) {
+			int mkdir_ret = mkdir(LOG_ROOT[(int)LogType::Full], S_IRWXU | S_IRWXG | S_IRWXO);
+
+			if (mkdir_ret == 0 || errno == EEXIST) {
+				log_root_ready = true;
+				PX4_INFO("log root dir ready: %s", LOG_ROOT[(int)LogType::Full]);
+				/* Check free space now that the dir is accessible */
+				util::check_free_space(LOG_ROOT[(int)LogType::Full], _param_sdlog_dirs_max.get(),
+						       _mavlink_log_pub, _file_name[(int)LogType::Full].sess_dir_index);
+			}
+		}
+#endif /* __PX4_FREERTOS */
 		// Start/stop logging (depending on logging mode, by default when arming/disarming)
 		const bool logging_started = start_stop_logging();
 
@@ -1107,6 +1176,10 @@ bool Logger::get_disable_boot_logging()
 	return false;
 }
 
+#if defined(__PX4_FREERTOS)
+extern "C" bool px4_openamp_rpc_endpoint_ready(void);
+#endif /* __PX4_FREERTOS */
+
 bool Logger::start_stop_logging()
 {
 	bool updated = false;
@@ -1138,6 +1211,13 @@ bool Logger::start_stop_logging()
 
 	// only start/stop if this is a state transition
 	if (updated && _prev_file_log_start_state != desired_state) {
+#if defined(__PX4_FREERTOS)
+		if (desired_state && !px4_openamp_rpc_endpoint_ready()) {
+			_prev_file_log_start_state = desired_state; // mimic success so we skip this session completely
+			PX4_WARN("CA55 storage not ready; skipping file logging for this arm session");
+			return false;
+		}
+#endif /* __PX4_FREERTOS */
 		_prev_file_log_start_state = desired_state;
 
 		if (desired_state) {
@@ -1155,9 +1235,19 @@ bool Logger::start_stop_logging()
 			return true;
 
 		} else {
+#if defined(__PX4_FREERTOS)
+			if (_log_mode == LogMode::while_armed) {
+				stop_log_file(LogType::Full);
+
+			} else {
+				initialize_load_output(PrintLoadReason::Postflight);
+				_should_stop_file_log = true;
+			}
+#else
 			// delayed stop: we measure the process loads and then stop
 			initialize_load_output(PrintLoadReason::Postflight);
 			_should_stop_file_log = true;
+#endif /* __PX4_FREERTOS */
 
 			if ((MissionLogType)_param_sdlog_mission.get() != MissionLogType::Disabled) {
 				stop_log_file(LogType::Mission);
@@ -1409,10 +1499,32 @@ void Logger::start_log_file(LogType type)
 
 	char file_name[LOG_DIR_LEN] = "";
 
+#if defined(__PX4_FREERTOS)
+	bool got_file_name = false;
+
+	if (type == LogType::Full) {
+		int sess_ret = rzv_remote_fs_session_open(hrt_absolute_time(), file_name, sizeof(file_name));
+
+		if (sess_ret == 0 && file_name[0] != '\0') {
+			PX4_DEBUG("SESSION_OPEN: path=%s", file_name);
+			got_file_name = true;
+		} else {
+			PX4_WARN("SESSION_OPEN failed (%d), falling back to legacy dir probe", sess_ret);
+		}
+	}
+
+	if (!got_file_name) {
+		if (get_log_file_name(type, file_name, sizeof(file_name), type == LogType::Full)) {
+			PX4_ERR("failed to get log file name");
+			return;
+		}
+	}
+#else
 	if (get_log_file_name(type, file_name, sizeof(file_name), type == LogType::Full)) {
 		PX4_ERR("failed to get log file name");
 		return;
 	}
+#endif /* __PX4_FREERTOS */
 
 #if defined(PX4_CRYPTO)
 	_writer.set_encryption_parameters(
@@ -1464,6 +1576,19 @@ void Logger::stop_log_file(LogType type)
 		write_perf_data(PrintLoadReason::Postflight);
 		_writer.set_need_reliable_transfer(false);
 	}
+#if defined(__PX4_FREERTOS)
+	if (type == LogType::Full) {
+		int log_fd = _writer.get_log_fd(type);
+
+		if (log_fd >= 0) {
+			int close_ret = rzv_remote_fs_session_close((int32_t)log_fd);
+
+			if (close_ret < 0) {
+				PX4_WARN("SESSION_CLOSE failed (%d), logdata.txt may be stale", close_ret);
+			}
+		}
+	}
+#endif /* __PX4_FREERTOS */
 
 	_writer.stop_log_file(type);
 }

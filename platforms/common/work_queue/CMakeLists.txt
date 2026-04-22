@@ -53,5 +53,6 @@ if(NOT "${PX4_PLATFORM}" MATCHES "nuttx")
 	target_compile_definitions(work_queue PRIVATE MODULE_NAME="work_queue")
 	target_compile_options(work_queue PRIVATE -Wno-cast-align) # TODO: fix and enable
 	add_dependencies(work_queue prebuild_targets)
+	px4_register_archive(work_queue)
 
 endif()

@@ -136,6 +136,10 @@ public:
 
 	pthread_t thread_id() const { return _thread; }
 
+#if defined(__PX4_FREERTOS)
+	/** Return the OS file descriptor for the open log file (-1 if not open or not started). */
+	int get_log_fd(LogType type) const { return _buffers[(int)type].fd(); }
+#endif /* __PX4_FREERTOS */
 #if defined(PX4_CRYPTO)
 	void set_encryption_parameters(px4_crypto_algorithm_t algorithm, uint8_t key_idx,  uint8_t exchange_key_idx)
 	{

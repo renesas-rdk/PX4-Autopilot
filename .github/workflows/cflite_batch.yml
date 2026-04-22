@@ -5,6 +5,7 @@ on:
 permissions: read-all
 jobs:
   BatchFuzzing:
+    if: github.repository == 'PX4/PX4-Autopilot'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

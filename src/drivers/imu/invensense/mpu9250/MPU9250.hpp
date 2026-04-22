@@ -50,6 +50,9 @@
 #include <lib/perf/perf_counter.h>
 #include <px4_platform_common/atomic.h>
 #include <px4_platform_common/i2c_spi_buses.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/px4_config.h>
+#endif /* __PX4_FREERTOS */
 
 #include "MPU9250_AK8963.hpp"
 
@@ -72,21 +75,37 @@ private:
 	void exit_and_cleanup() override;
 
 	// Sensor Configuration
+#if defined(__PX4_FREERTOS)
+	static constexpr float FIFO_SAMPLE_DT{1e6f / 1000.f};
+	static constexpr int32_t SAMPLES_PER_TRANSFER{3};                    // ensure at least 1 new accel sample per transfer
+	static constexpr int16_t ACCEL_SPIKE_LIMIT{8000};   // ~3.9 g change between consecutive samples
+	static constexpr int16_t GYRO_SPIKE_LIMIT{12000};   // ~730 deg/s change between consecutive samples
+	static constexpr uint32_t SPIKE_REJECT_RECOVERY_LIMIT{10};
+	static constexpr int32_t FIFO_GYRO_SAMPLE_LIMIT{6};
+#else
 	static constexpr float FIFO_SAMPLE_DT{1e6f / 8000.f};
 	static constexpr int32_t SAMPLES_PER_TRANSFER{2};                    // ensure at least 1 new accel sample per transfer
+#endif /* __PX4_FREERTOS */
 	static constexpr float GYRO_RATE{1e6f / FIFO_SAMPLE_DT};             // 8000 Hz gyro
 	static constexpr float ACCEL_RATE{GYRO_RATE / SAMPLES_PER_TRANSFER}; // 4000 Hz accel
 
 	// maximum FIFO samples per transfer is limited to the size of sensor_accel_fifo/sensor_gyro_fifo
 	static constexpr int32_t FIFO_MAX_SAMPLES{math::min(FIFO::SIZE / sizeof(FIFO::DATA), sizeof(sensor_gyro_fifo_s::x) / sizeof(sensor_gyro_fifo_s::x[0]), sizeof(sensor_accel_fifo_s::x) / sizeof(sensor_accel_fifo_s::x[0]) * (int)(GYRO_RATE / ACCEL_RATE))};
 
+#if defined(__PX4_FREERTOS)
+public:
+#endif
 	// Transfer data
 	struct FIFOTransferBuffer {
 		uint8_t cmd{static_cast<uint8_t>(Register::FIFO_R_W) | DIR_READ};
 		FIFO::DATA f[FIFO_MAX_SAMPLES] {};
 	};
+#if defined(__PX4_FREERTOS)
+	static_assert(sizeof(FIFOTransferBuffer) == (1 + FIFO_MAX_SAMPLES * sizeof(FIFO::DATA)));
+#else
 	// ensure no struct padding
 	static_assert(sizeof(FIFOTransferBuffer) == (1 + FIFO_MAX_SAMPLES *sizeof(FIFO::DATA)));
+#endif /* __PX4_FREERTOS */
 
 	struct register_config_t {
 		Register reg;
@@ -148,6 +167,9 @@ private:
 	hrt_abstime _reset_timestamp{0};
 	hrt_abstime _last_config_check_timestamp{0};
 	hrt_abstime _temperature_update_timestamp{0};
+#if defined(__PX4_FREERTOS)
+	hrt_abstime _fifo_last_timestamp_sample{0};
+#endif /* __PX4_FREERTOS */
 	int _failure_count{0};
 
 	px4::atomic<hrt_abstime> _drdy_timestamp_sample{0};
@@ -161,17 +183,33 @@ private:
 		FIFO_READ,
 	} _state{STATE::RESET};
 
+#if defined(__PX4_FREERTOS)
+	uint8_t _smplrt_div{0};
+	float _fifo_sample_dt_us{FIFO_SAMPLE_DT};
+	uint16_t _fifo_empty_interval_us{1000}; // default 1000 us / 1000 Hz transfer interval
+	uint32_t _poll_interval_us{0};
+#else
 	uint16_t _fifo_empty_interval_us{1250}; // default 1250 us / 800 Hz transfer interval
+#endif /* __PX4_FREERTOS */
 	int32_t _fifo_gyro_samples{static_cast<int32_t>(_fifo_empty_interval_us / (1000000 / GYRO_RATE))};
 
 	uint8_t _checked_register{0};
 	static constexpr uint8_t size_register_cfg{18};
 	register_config_t _register_cfg[size_register_cfg] {
 		// Register                     | Set bits, Clear bits
+#if defined(__PX4_FREERTOS)
+		// Use a moderate DLPF bandwidth to reduce latency and ease FIFO alignment
+		{ Register::CONFIG,             CONFIG_BIT::FIFO_MODE | CONFIG_BIT::DLPF_CFG_41HZ, CONFIG_BIT::DLPF_CFG_MASK & ~CONFIG_BIT::DLPF_CFG_41HZ },
+#else
 		{ Register::CONFIG,             CONFIG_BIT::FIFO_MODE | CONFIG_BIT::DLPF_CFG_BYPASS_DLPF_8KHZ, 0 },
+#endif /* __PX4_FREERTOS */
 		{ Register::GYRO_CONFIG,        GYRO_CONFIG_BIT::GYRO_FS_SEL_2000_DPS, GYRO_CONFIG_BIT::FCHOICE_B_BYPASS_DLPF },
 		{ Register::ACCEL_CONFIG,       ACCEL_CONFIG_BIT::ACCEL_FS_SEL_16G, 0 },
+#if defined(__PX4_FREERTOS)
+		{ Register::ACCEL_CONFIG2,     	ACCEL_CONFIG2_BIT::A_DLPFCFG_BW_44HZ_DLPF, ACCEL_CONFIG2_BIT::ACCEL_FCHOICE_B_BYPASS_DLPF | (ACCEL_CONFIG2_BIT::A_DLPFCFG_MASK & ~ACCEL_CONFIG2_BIT::A_DLPFCFG_BW_44HZ_DLPF) },
+#else
 		{ Register::ACCEL_CONFIG2,      ACCEL_CONFIG2_BIT::ACCEL_FCHOICE_B_BYPASS_DLPF, 0 },
+#endif /* __PX4_FREERTOS */
 		{ Register::FIFO_EN,            FIFO_EN_BIT::GYRO_XOUT | FIFO_EN_BIT::GYRO_YOUT | FIFO_EN_BIT::GYRO_ZOUT | FIFO_EN_BIT::ACCEL, 0 },
 		{ Register::I2C_SLV4_CTRL,      I2C_SLV4_CTRL_BIT::I2C_MST_DLY, 0 },
 		{ Register::I2C_MST_CTRL,       I2C_MST_CTRL_BIT::I2C_MST_P_NSR | I2C_MST_CTRL_BIT::I2C_MST_CLK_400_kHz, 0 },
@@ -187,4 +225,14 @@ private:
 		{ Register::ZA_OFFSET_H,        0, 0 },
 		{ Register::ZA_OFFSET_L,        0, 0 },
 	};
+#if defined(__PX4_FREERTOS)
+	int16_t _last_valid_accel_raw[3]{};
+	int16_t _last_valid_gyro_raw[3]{};
+	bool _have_valid_accel_sample{false};
+	bool _have_valid_gyro_sample{false};
+	uint32_t _accel_reject_count{0};
+	uint32_t _gyro_reject_count{0};
+	uint32_t _accel_reject_streak{0};
+	uint32_t _gyro_reject_streak{0};
+#endif /* __PX4_FREERTOS */
 };

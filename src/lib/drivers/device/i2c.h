@@ -36,6 +36,8 @@
 #include "nuttx/I2C.hpp"
 #elif defined(__PX4_QURT)
 #include "qurt/I2C.hpp"
+#elif defined(__PX4_FREERTOS)
+#  include "rzv/I2C.hpp"
 #else
 #include "posix/I2C.hpp"
 #endif

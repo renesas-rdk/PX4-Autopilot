@@ -44,15 +44,45 @@
 #include <uxr/client/util/ping.h>
 #include <ucdr/microcdr.h>
 
+#if defined(__PX4_FREERTOS)
+#include "px4_platform_common/log.h"
+#include "uxr/client/core/session/session.h"
+#include "openamp_transport.h"
+#include <FreeRTOS_POSIX.h>
+#include <FreeRTOS_POSIX/fcntl.h>
+#include <FreeRTOS_POSIX/time.h>
+#include <FreeRTOS_POSIX/unistd.h>
+#include "uxr/client/profile/transport/custom/custom_transport.h"
+#include <new>         // For std::bad_alloc
+#include <exception>  // For std::exception
+extern "C" {
+    void px4_custom_transport_print_status(void);
+}
+#else
 #include <termios.h>
 #include <fcntl.h>
+#endif
 #include <stdlib.h>
+#if !defined(__PX4_FREERTOS)
 #include <unistd.h>
+#endif /* __PX4_FREERTOS */
 
 #define PARTICIPANT_XML_SIZE 512
 static constexpr uint8_t TIMESYNC_MAX_TIMEOUTS = 10;
 
 using namespace time_literals;
+#if defined(__PX4_FREERTOS)
+static const char *get_weekday_abbr(int weekday)
+{
+	static constexpr const char *names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+
+	if (weekday < 0 || weekday > 6) {
+		return "???";
+	}
+
+	return names[weekday];
+}
+#endif /* __PX4_FREERTOS */
 
 static void on_time(uxrSession *session, int64_t current_time, int64_t received_timestamp, int64_t transmit_timestamp,
 		    int64_t originate_timestamp, void *args)
@@ -124,6 +154,45 @@ bool UxrceddsClient::init()
 {
 	deinit();
 
+#if defined(__PX4_FREERTOS)
+	if (_transport == Transport::Custom) {
+		try {
+			/* Transport */
+			_transport_custom = new uxrCustomTransport();
+		} catch (std::bad_alloc &e) {
+			PX4_ERR("alloc failed");
+			return false;
+		} catch (const std::exception &e) {
+			PX4_ERR("exception: %s", e.what());
+			return false;
+		} catch (...) {
+			PX4_ERR("unknown exception");
+			return false;
+		}
+
+		// Use px4_* prefixed functions to avoid conflicts
+		uxr_set_custom_transport_callbacks(
+			_transport_custom,
+			NULL,
+			px4_custom_transport_open,
+			px4_custom_transport_close,
+			px4_custom_transport_write,
+			px4_custom_transport_read
+		);
+
+		if (_transport_custom &&
+			uxr_init_custom_transport(_transport_custom, NULL)) {
+			PX4_DEBUG("init custom transport");
+			_comm = &_transport_custom->comm;
+			return true;
+		}
+
+		PX4_ERR("init custom transport failed");
+		delete _transport_custom;
+		_transport_custom = nullptr;
+        return false;
+	}
+#else
 	if (_transport == Transport::Serial) {
 		int fd = open(_device, O_RDWR | O_NOCTTY | O_NONBLOCK);
 
@@ -158,6 +227,7 @@ bool UxrceddsClient::init()
 
 		return false;
 	}
+#endif /* __PX4_FREERTOS */
 
 #if defined(UXRCE_DDS_CLIENT_UDP)
 
@@ -185,16 +255,26 @@ bool UxrceddsClient::init()
 
 void UxrceddsClient::deinit()
 {
+#if !defined(__PX4_FREERTOS)
 	if (_fd >= 0) {
 		close(_fd);
 		_fd = -1;
 	}
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+	if (_transport_custom) {
+		uxr_close_custom_transport(_transport_custom);
+		delete _transport_custom;
+		_transport_custom = nullptr;
+	}
+#else
 	if (_transport_serial) {
 		uxr_close_serial_transport(_transport_serial);
 		delete _transport_serial;
 		_transport_serial = nullptr;
 	}
+#endif /* __PX4_FREERTOS */
 
 #if defined(UXRCE_DDS_CLIENT_UDP)
 
@@ -209,7 +289,11 @@ void UxrceddsClient::deinit()
 	_comm = nullptr;
 }
 
+#if defined(__PX4_FREERTOS)
+bool UxrceddsClient::setup_session(uxrSession *session)
+#else
 bool UxrceddsClient::setupSession(uxrSession *session)
+#endif /* __PX4_FREERTOS */
 {
 	_participant_config = static_cast<ParticipantConfig>(_param_uxrce_dds_ptcfg.get());
 	_synchronize_timestamps = (_param_uxrce_dds_synct.get() > 0);
@@ -258,6 +342,11 @@ bool UxrceddsClient::setupSession(uxrSession *session)
 
 	uxrStreamId best_effort_in = uxr_create_input_best_effort_stream(session);
 
+#if defined(__PX4_FREERTOS)
+	_reliable_in = reliable_in;
+	_best_effort_in = best_effort_in;
+#endif /* __PX4_FREERTOS */
+
 	// Create entities
 	_participant_id = uxr_object_id(0x01, UXR_PARTICIPANT_ID);
 
@@ -266,10 +355,21 @@ bool UxrceddsClient::setupSession(uxrSession *session)
 	uint16_t participant_req{};
 
 	if (_participant_config == ParticipantConfig::Custom) {
+#if defined(__PX4_FREERTOS)
+		const char* participant_xml =
+			"<dds>"
+				"<participant>"
+					"<rtps>"
+						"<name>px4_micro_xrce_dds</name>"
+					"</rtps>"
+				"</participant>"
+			"</dds>";
+		participant_req = uxr_buffer_create_participant_xml(session, _reliable_out, _participant_id, domain_id, participant_xml, UXR_REPLACE);
+#else
 		// Create participant by reference (XML not required)
 		participant_req = uxr_buffer_create_participant_ref(session, _reliable_out, _participant_id, domain_id,
 				  "px4_participant", UXR_REPLACE);
-
+#endif /* __PX4_FREERTOS */
 	} else {
 		// Construct participant XML and create participant by XML
 		char participant_xml[PARTICIPANT_XML_SIZE];
@@ -316,10 +416,33 @@ bool UxrceddsClient::setupSession(uxrSession *session)
 				  participant_xml, UXR_REPLACE);
 	}
 
+#if defined(__PX4_FREERTOS)
+	// Multiple attempts with increasing timeout
+	bool success = false;
+	uint8_t request_status = 255;
+#else
 	uint8_t request_status;
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+	for (int attempt = 0; attempt < 3 && !success; attempt++) {
+		uint32_t timeout_ms = 1000 * (1 << attempt); // 1s, 2s, 4s
+		success = uxr_run_session_until_all_status(session, timeout_ms,
+				&participant_req, &request_status, 1);
+
+		if (!success && attempt < 2) {
+			PX4_WARN("create participant failed (attempt %d, status %i), retrying in 500ms...",
+				 attempt + 1, request_status);
+			px4_usleep(500'000);
+		}
+	}
+
+	if (!success) {
+		PX4_ERR("create entities failed: participant: %i (after 3 attempts)", request_status);
+#else
 	if (!uxr_run_session_until_all_status(session, 1000, &participant_req, &request_status, 1)) {
 		PX4_ERR("create entities failed: participant: %i", request_status);
+#endif /* __PX4_FREERTOS */
 		return false;
 	}
 
@@ -366,11 +489,13 @@ bool UxrceddsClient::setupSession(uxrSession *session)
 		return false;
 	}
 
+#if !defined(__PX4_FREERTOS)
 	if (!_subs->init(session, _reliable_out, reliable_in, best_effort_in, _participant_id, _client_namespace)) {
 		PX4_ERR("subs init failed");
 		return false;
 	}
 
+#endif /* __PX4_FREERTOS */
 	// create VehicleCommand replier
 	if (_num_of_repliers < MAX_NUM_REPLIERS) {
 		if (add_replier(new VehicleCommandSrv(session, _reliable_out, reliable_in, _participant_id, _client_namespace,
@@ -384,13 +509,24 @@ bool UxrceddsClient::setupSession(uxrSession *session)
 	return true;
 }
 
+#if defined(__PX4_FREERTOS)
+void UxrceddsClient::delete_session(uxrSession *session)
+#else
 void UxrceddsClient::deleteSession(uxrSession *session)
+#endif /* __PX4_FREERTOS */
 {
 	delete_repliers();
 
 	if (_session_created) {
 		uxr_delete_session_retries(session, _connected ? 1 : 0);
 		_session_created = false;
+#if defined(__PX4_FREERTOS)
+	}
+
+	if (_subs_initialized) {
+		_subs->reset();
+		_subs_initialized = false;
+#endif /* __PX4_FREERTOS */
 	}
 
 	_last_payload_tx_rate = 0;
@@ -404,10 +540,17 @@ UxrceddsClient::~UxrceddsClient()
 
 	delete_repliers();
 
+#if defined(__PX4_FREERTOS)
+	if (_transport_custom) {
+		uxr_close_custom_transport(_transport_custom);
+		delete _transport_custom;
+	}
+#else
 	if (_transport_serial) {
 		uxr_close_serial_transport(_transport_serial);
 		delete _transport_serial;
 	}
+#endif /* __PX4_FREERTOS */
 
 	perf_free(_loop_perf);
 	perf_free(_loop_interval_perf);
@@ -472,6 +615,7 @@ static void fillMessageFormatResponse(const message_format_request_s &message_fo
 	message_format_response.timestamp = hrt_absolute_time();
 }
 
+#if !defined(__PX4_FREERTOS)
 void UxrceddsClient::calculateTxRxRate()
 {
 	const hrt_abstime now = hrt_absolute_time();
@@ -486,6 +630,7 @@ void UxrceddsClient::calculateTxRxRate()
 	}
 }
 
+#endif /* __PX4_FREERTOS */
 void UxrceddsClient::handleMessageFormatRequest()
 {
 	message_format_request_s message_format_request;
@@ -497,6 +642,7 @@ void UxrceddsClient::handleMessageFormatRequest()
 	}
 }
 
+#if !defined(__PX4_FREERTOS)
 void UxrceddsClient::checkConnectivity(uxrSession *session)
 {
 	// Reset TX zero counter, when data is sent
@@ -577,6 +723,7 @@ void UxrceddsClient::resetConnectivityCounters()
 	_num_tx_rate_zero = 0;
 	_num_rx_rate_zero = 0;
 }
+#endif /* __PX4_FREERTOS */
 
 void UxrceddsClient::syncSystemClock(uxrSession *session)
 {
@@ -603,11 +750,32 @@ void UxrceddsClient::syncSystemClock(uxrSession *session)
 		PX4_ERR("failed setting system clock");
 
 	} else {
+#if defined(__PX4_FREERTOS)
+		char buf[64];
+#else
 		char buf[40];
+#endif /* __PX4_FREERTOS */
 		struct tm date_time;
+#if defined(__PX4_FREERTOS)
+        if (gmtime_r(&ts.tv_sec, &date_time)) {
+            // Manually format the date_time into buf
+            snprintf(buf, sizeof(buf), "%.3s %04d-%02d-%02d %02d:%02d:%02d UTC",
+                     get_weekday_abbr(date_time.tm_wday),
+                     date_time.tm_year + 1900,
+                     date_time.tm_mon + 1,
+                     date_time.tm_mday,
+                     date_time.tm_hour,
+                     date_time.tm_min,
+                     date_time.tm_sec);
+            PX4_DEBUG("successfully set system clock: %s", buf);
+        } else {
+            PX4_ERR("failed to convert time");
+        }
+#else
 		localtime_r(&ts.tv_sec, &date_time);
 		strftime(buf, sizeof(buf), "%a %Y-%m-%d %H:%M:%S %Z", &date_time);
 		PX4_INFO("successfully set system clock: %s", buf);
+#endif /* __PX4_FREERTOS */
 	}
 }
 
@@ -622,20 +790,69 @@ void UxrceddsClient::run()
 		return;
 	}
 
+#if defined(__PX4_FREERTOS)
+	uint32_t retry_count = 0;
+	const uint32_t max_backoff_ms = 30000; // 30s max
+	const uint32_t base_delay_ms = 1000;   // 1s base
+
+#endif /* __PX4_FREERTOS */
 	while (!should_exit()) {
 		while (!should_exit()) {
 			if (!init()) {
+#if defined(__PX4_FREERTOS)
+				// Exponential backoff: 1s → 2s → 4s → 8s → ... → 30s max
+				uint32_t delay_ms = base_delay_ms << retry_count;
+
+				if (delay_ms > max_backoff_ms) {
+					delay_ms = max_backoff_ms;
+				}
+
+				retry_count++;
+
+				if (retry_count > 10) {
+					retry_count = 10; // Cap at 2^10 = 1024
+				}
+
+				PX4_ERR("init failed (attempt %lu), retrying in %lu ms", (unsigned long)retry_count, (unsigned long)delay_ms);
+				px4_usleep(delay_ms * 1000);
+#else
 				px4_usleep(1'000'000);
 				PX4_ERR("init failed, will retry now");
+#endif /* __PX4_FREERTOS */
 				continue;
 			}
 
+#if defined(__PX4_FREERTOS)
+			if (!setup_session(&session)) {
+				delete_session(&session);
+
+				// Exponential backoff: 1s → 2s → 4s → 8s → ... → 30s max
+				uint32_t delay_ms = base_delay_ms << retry_count;
+
+				if (delay_ms > max_backoff_ms) {
+					delay_ms = max_backoff_ms;
+				}
+
+				retry_count++;
+
+				if (retry_count > 10) {
+					retry_count = 10; // Cap at 2^10 = 1024
+				}
+
+				PX4_ERR("session setup failed (attempt %lu), retrying in %lu ms", (unsigned long)retry_count, (unsigned long)delay_ms);
+				px4_usleep(delay_ms * 1000);
+#else
 			if (!setupSession(&session)) {
 				deleteSession(&session);
 				px4_usleep(1'000'000);
 				PX4_ERR("session setup failed, will retry now");
+#endif /* __PX4_FREERTOS */
 				continue;
 			}
+#if defined(__PX4_FREERTOS)
+
+			retry_count = 0; // Reset on success
+#endif /* __PX4_FREERTOS */
 
 			if (_comm && _connected) {
 				break;
@@ -647,8 +864,32 @@ void UxrceddsClient::run()
 		}
 
 		hrt_abstime last_sync_session = 0;
+#if defined(__PX4_FREERTOS)
+		hrt_abstime last_status_update = hrt_absolute_time();
+		hrt_abstime last_ping = hrt_absolute_time();
+		hrt_abstime last_transport_status = hrt_absolute_time();  // For transport status reporting
+		// Increase tolerance for missed pings from 3 to 8
+		const int max_pings_missed = 8;  // More tolerant of missed pings
+		hrt_abstime last_forced_ping = 0;
+		int num_pings_missed = 0;
+		bool had_ping_reply = false;
+		uint32_t last_num_payload_sent{};
+		uint32_t last_num_payload_received{};
+#endif /* __PX4_FREERTOS */
 		int poll_error_counter = 0;
+#if defined(__PX4_FREERTOS)
+
+#if defined(__PX4_FREERTOS)
+		_subs->init(&session, _reliable_out, _reliable_in, _best_effort_in, _participant_id, _client_namespace);
+#else
+		_subs->init();
+#endif /* __PX4_FREERTOS */
+		_subs_initialized = true;
+
+		PX4_DEBUG("Session established - connection active");
+#else
 		resetConnectivityCounters();
+#endif /* __PX4_FREERTOS */
 
 		while (!should_exit() && _connected) {
 			perf_begin(_loop_perf);
@@ -656,6 +897,7 @@ void UxrceddsClient::run()
 
 			int orb_poll_timeout_ms = 10;
 
+#if !defined(__PX4_FREERTOS)
 			int bytes_available = 0;
 
 			if (ioctl(_fd, FIONREAD, (unsigned long)&bytes_available) == OK) {
@@ -663,7 +905,7 @@ void UxrceddsClient::run()
 					orb_poll_timeout_ms = 0;
 				}
 			}
-
+#endif /* __PX4_FREERTOS */
 			/* Wait for topic updates for max 10 ms */
 			int poll = px4_poll(_subs->fds, (sizeof(_subs->fds) / sizeof(_subs->fds[0])), orb_poll_timeout_ms);
 
@@ -716,22 +958,105 @@ void UxrceddsClient::run()
 			// Check for a ping response
 			/* PONG_IN_SESSION_STATUS */
 			if (session.on_pong_flag == 1) {
+#if defined(__PX4_FREERTOS)
+				had_ping_reply = true;
+				session.on_pong_flag = 0;  // Reset the flag after processing
+				num_pings_missed = 0;      // Reset missed pings counter on successful pong
+				// PX4_DEBUG("Received ping response");
+#else
 				_had_ping_reply = true;
+#endif /* __PX4_FREERTOS */
 			}
 
+#if defined(__PX4_FREERTOS)
+			const hrt_abstime now = hrt_absolute_time();
+#else
 			// Calculate the payload tx/rx rate for connectivity monitoring
 			calculateTxRxRate();
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+			if (now - last_status_update > 1_s) {
+				float dt = (now - last_status_update) / 1e6f;
+				_last_payload_tx_rate = (_subs->num_payload_sent - last_num_payload_sent) / dt;
+				_last_payload_rx_rate = (_pubs->num_payload_received - last_num_payload_received) / dt;
+				last_num_payload_sent = _subs->num_payload_sent;
+				last_num_payload_received = _pubs->num_payload_received;
+				last_status_update = now;
+			}
+
+			// Periodically print transport status for debugging
+			if (_transport == Transport::Custom && hrt_elapsed_time(&last_transport_status) > 5_s) {
+				last_transport_status = now;
+				// Call with proper C linkage
+				// px4_custom_transport_print_status();
+			}
+
+			// Data path health monitoring - track last successful RX
+			static hrt_abstime last_data_rx = hrt_absolute_time();
+			if (_last_payload_rx_rate > 0) {
+				last_data_rx = now;
+			}
+
+			// Detect data path stall (no RX for 5s despite TX)
+			if ((_last_payload_tx_rate > 0) && (hrt_elapsed_time(&last_data_rx) > 5_s)) {
+				PX4_WARN("Data path stalled: TX active but no RX for 5s, reconnecting");
+				_connected = false;
+			}
+
+			// Handle ping, unless we're actively sending & receiving payloads successfully
+			if ((_last_payload_tx_rate > 0) && (_last_payload_rx_rate > 0)) {
+				_connected = true;
+				num_pings_missed = 0;
+				last_ping = now;
+				// Still send periodic pings even with active data to keep transport active
+				if (hrt_elapsed_time(&last_forced_ping) > 5_s) {
+					last_forced_ping = now;
+					// PX4_DEBUG("Sending maintenance ping");
+					uxr_ping_agent_session(&session, 500, 1);
+				}
+			} else {
+				if (hrt_elapsed_time(&last_ping) > 1_s) {
+					last_ping = now;
+
+					if (had_ping_reply) {
+						num_pings_missed = 0;
+					} else {
+						++num_pings_missed;
+						if (num_pings_missed % 10 == 0) {
+							PX4_WARN("Missed %d ping responses", num_pings_missed);
+						}
+					}
+
+					int timeout_ms = 1'000; // 1 second
+					uint8_t attempts = 1;
+					uxr_ping_agent_session(&session, timeout_ms, attempts);
+
+					had_ping_reply = false;
+				}
+
+				if (num_pings_missed >= max_pings_missed) {
+					PX4_WARN("No ping response after %d attempts, disconnecting", num_pings_missed);
+					_connected = false;
+				}
+			}
+#else
 			// Check if there is still connectivity with the agent
 			checkConnectivity(&session);
+#endif /* __PX4_FREERTOS */
 
 			perf_end(_loop_perf);
 		}
 
+#if defined(__PX4_FREERTOS)
+		delete_session(&session);
+#else
 		deleteSession(&session);
+#endif /* __PX4_FREERTOS */
 	}
 }
 
+#if !defined(__PX4_FREERTOS)
 bool UxrceddsClient::setBaudrate(int fd, unsigned baud)
 {
 	int speed;
@@ -868,6 +1193,7 @@ bool UxrceddsClient::setBaudrate(int fd, unsigned baud)
 
 	return true;
 }
+#endif /* __PX4_FREERTOS */
 
 bool UxrceddsClient::add_replier(SrvBase *replier)
 {
@@ -948,9 +1274,15 @@ int UxrceddsClient::print_status()
 
 #endif
 
+#if defined(__PX4_FREERTOS)
+	if (_transport_custom != nullptr) {
+		PX4_INFO("Using transport:     custom");
+	}
+#else
 	if (_transport_serial != nullptr) {
 		PX4_INFO("Using transport:     serial");
 	}
+#endif /* __PX4_FREERTOS */
 
 	if (_connected) {
 		PX4_INFO("Payload tx:          %i B/s", _last_payload_tx_rate);
@@ -975,11 +1307,15 @@ UxrceddsClient *UxrceddsClient::instantiate(int argc, char *argv[])
 	char port[PORT_MAX_LENGTH] = {0};
 	char agent_ip[AGENT_IP_MAX_LENGTH] = {0};
 
+#if defined(__PX4_FREERTOS)
+	Transport transport = Transport::Custom;
+#else
 #if defined(UXRCE_DDS_CLIENT_UDP)
 	Transport transport = Transport::Udp;
 #else
 	Transport transport = Transport::Serial;
 #endif
+#endif /* __PX4_FREERTOS */
 	const char *device = nullptr;
 	int baudrate = 921600;
 
@@ -993,7 +1329,10 @@ UxrceddsClient *UxrceddsClient::instantiate(int argc, char *argv[])
 
 			} else if (!strcmp(myoptarg, "udp")) {
 				transport = Transport::Udp;
-
+#if defined(__PX4_FREERTOS)
+			} else if (!strcmp(myoptarg, "custom")) {
+				transport = Transport::Custom;
+#endif /* __PX4_FREERTOS */
 			} else {
 				PX4_ERR("unknown transport: %s", myoptarg);
 				error_flag = true;
@@ -1070,12 +1409,14 @@ UxrceddsClient *UxrceddsClient::instantiate(int argc, char *argv[])
 		return nullptr;
 	}
 
+#if !defined(__PX4_FREERTOS)
 	if (transport == Transport::Serial) {
 		if (!device) {
 			PX4_ERR("Missing device");
 			return nullptr;
 		}
 	}
+#endif /* __PX4_FREERTOS */
 
 	return new UxrceddsClient(transport, device, baudrate, agent_ip, port, client_namespace);
 }
@@ -1089,16 +1430,22 @@ int UxrceddsClient::print_usage(const char *reason)
 	PRINT_MODULE_DESCRIPTION(
 		R"DESCR_STR(
 ### Description
+UXRCE-DDS Client used to communicate uORB topics with an Agent over serial, UDP or Custom.
 UXRCE-DDS Client used to communicate uORB topics with an Agent over serial or UDP.
 
 ### Examples
 $ uxrce_dds_client start -t serial -d /dev/ttyS3 -b 921600
 $ uxrce_dds_client start -t udp -h 127.0.0.1 -p 15555
+$ uxrce_dds_client start -t custom
 )DESCR_STR");
 
 	PRINT_MODULE_USAGE_NAME("uxrce_dds_client", "system");
 	PRINT_MODULE_USAGE_COMMAND("start");
+#if defined(__PX4_FREERTOS)
+	PRINT_MODULE_USAGE_PARAM_STRING('t', "udp", "serial|udp|custom", "Transport protocol", true);
+#else
 	PRINT_MODULE_USAGE_PARAM_STRING('t', "udp", "serial|udp", "Transport protocol", true);
+#endif /* __PX4_FREERTOS */
 	PRINT_MODULE_USAGE_PARAM_STRING('d', nullptr, "<file:dev>", "serial device", true);
 	PRINT_MODULE_USAGE_PARAM_INT('b', 0, 0, 3000000, "Baudrate (can also be p:<param_name>)", true);
 	PRINT_MODULE_USAGE_PARAM_STRING('h', nullptr, "<IP>", "Agent IP. If not provided, defaults to UXRCE_DDS_AG_IP", true);

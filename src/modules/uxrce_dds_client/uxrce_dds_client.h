@@ -46,15 +46,26 @@
 
 #include <lib/perf/perf_counter.h>
 
+#if !defined(__PX4_FREERTOS)
 #if defined(CONFIG_NET) || defined(__PX4_POSIX)
 # define UXRCE_DDS_CLIENT_UDP 1
+#endif
 #endif
 
 #include "srv_base.h"
 
+#if defined(__PX4_FREERTOS)
+#define MODULE_NAME "uxrce_dds_client"
+#endif
+
 #define MAX_NUM_REPLIERS 5
+#if defined(__PX4_FREERTOS)
+#define STREAM_HISTORY  128  // Increased from 4 to 128 to handle all 26 topics
+#define BUFFER_SIZE (UXR_CONFIG_CUSTOM_TRANSPORT_MTU * STREAM_HISTORY) // MTU==512 by default
+#else
 #define STREAM_HISTORY  4
 #define BUFFER_SIZE (UXR_CONFIG_SERIAL_TRANSPORT_MTU * STREAM_HISTORY) // MTU==512 by default
+#endif /* __PX4_FREERTOS */
 
 class UxrceddsClient : public ModuleBase<UxrceddsClient>, public ModuleParams
 {
@@ -62,6 +73,9 @@ public:
 	enum class Transport {
 		Serial,
 		Udp
+#if defined(__PX4_FREERTOS)
+		,Custom
+#endif
 	};
 
 	UxrceddsClient(Transport transport, const char *device, int baudrate, const char *host, const char *port,
@@ -120,16 +134,25 @@ private:
 	bool init();
 	void deinit();
 
+#if defined(__PX4_FREERTOS)
+	bool setup_session(uxrSession *session);
+	void delete_session(uxrSession *session);
+#else
 	bool setupSession(uxrSession *session);
 	void deleteSession(uxrSession *session);
+#endif /* __PX4_FREERTOS */
 
+#if !defined(__PX4_FREERTOS)
 	bool setBaudrate(int fd, unsigned baud);
+#endif /* __PX4_FREERTOS */
 
 	void handleMessageFormatRequest();
+#if !defined(__PX4_FREERTOS)
 
 	void calculateTxRxRate();
 	void checkConnectivity(uxrSession *session);
 	void resetConnectivityCounters();
+#endif /* __PX4_FREERTOS */
 
 	uORB::Publication<message_format_response_s> _message_format_response_pub{ORB_ID(message_format_response)};
 	uORB::Subscription _message_format_request_sub{ORB_ID(message_format_request)};
@@ -139,7 +162,11 @@ private:
 
 	Transport _transport{};
 
+#if defined(__PX4_FREERTOS)
+	uxrCustomTransport *_transport_custom{nullptr};
+#else
 	uxrSerialTransport *_transport_serial{nullptr};
+#endif /* __PX4_FREERTOS */
 	char _device[32] {};
 	int _baudrate{};
 
@@ -149,7 +176,11 @@ private:
 		Default,
 		LocalHostOnly,
 		Custom,
+#if defined(__PX4_FREERTOS)
+	} _participant_config{ParticipantConfig::Custom};
+#else
 	} _participant_config{ParticipantConfig::Default};
+#endif /* __PX4_FREERTOS */
 
 	bool _synchronize_timestamps;
 
@@ -176,6 +207,10 @@ private:
 
 	uxrStreamId _reliable_out;
 	uxrStreamId _best_effort_out;
+#if defined(__PX4_FREERTOS)
+	uxrStreamId _reliable_in;
+	uxrStreamId _best_effort_in;
+#endif /* __PX4_FREERTOS */
 
 	SrvBase *_repliers[MAX_NUM_REPLIERS];
 	uint8_t _num_of_repliers{0};
@@ -183,6 +218,7 @@ private:
 	uxrCommunication *_comm{nullptr};
 	int _fd{-1};
 
+#if !defined(__PX4_FREERTOS)
 	hrt_abstime _last_status_update;
 	hrt_abstime _last_ping;
 	bool _had_ping_reply{false};
@@ -191,12 +227,16 @@ private:
 	int32_t _num_rx_rate_zero{0};
 	uint32_t _last_num_payload_sent{0};
 	uint32_t _last_num_payload_received{0};
+#endif /* __PX4_FREERTOS */
 	int _last_payload_tx_rate{}; ///< in B/s
 	int _last_payload_rx_rate{}; ///< in B/s
 
 	bool _connected{false};
 	bool _session_created{false};
 	bool _timesync_converged{false};
+#if defined(__PX4_FREERTOS)
+	bool _subs_initialized{false};
+#endif /* __PX4_FREERTOS */
 
 	Timesync _timesync{timesync_status_s::SOURCE_PROTOCOL_DDS};
 
@@ -208,8 +248,12 @@ private:
 		(ParamInt<px4::params::UXRCE_DDS_KEY>) _param_uxrce_key,
 		(ParamInt<px4::params::UXRCE_DDS_PTCFG>) _param_uxrce_dds_ptcfg,
 		(ParamInt<px4::params::UXRCE_DDS_SYNCC>) _param_uxrce_dds_syncc,
+#if defined(__PX4_FREERTOS)
+		(ParamInt<px4::params::UXRCE_DDS_SYNCT>) _param_uxrce_dds_synct
+#else
 		(ParamInt<px4::params::UXRCE_DDS_SYNCT>) _param_uxrce_dds_synct,
 		(ParamInt<px4::params::UXRCE_DDS_TX_TO>) _param_uxrce_dds_tx_to,
 		(ParamInt<px4::params::UXRCE_DDS_RX_TO>) _param_uxrce_dds_rx_to
+#endif /* __PX4_FREERTOS */
 	)
 };

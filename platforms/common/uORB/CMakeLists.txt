@@ -106,6 +106,9 @@ else()
 endif()
 
 target_link_libraries(uORB PRIVATE uorb_msgs heatshrink)
+target_include_directories(uORB PRIVATE
+	${PX4_SOURCE_DIR}/src/drivers
+)
 target_compile_options(uORB PRIVATE ${MAX_CUSTOM_OPT_LEVEL})
 
 if(PX4_TESTING)

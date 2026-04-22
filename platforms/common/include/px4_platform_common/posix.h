@@ -45,6 +45,43 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#include <time.h>
+#include <termios.h>
+
+#ifndef PTHREAD_STACK_MIN
+#define PTHREAD_STACK_MIN 1024
+#endif
+
+#ifndef F_OK
+#define F_OK 0
+#endif
+
+#ifndef R_OK
+#define R_OK 4
+#endif
+
+#ifndef W_OK
+#define W_OK 2
+#endif
+
+#ifndef ENOTSUP
+#define ENOTSUP 95
+#endif
+
+#ifndef TCIOFLUSH
+#define TCIOFLUSH 0
+#endif
+
+#ifndef CSTOPB
+#define CSTOPB 0
+#endif
+
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+#endif /* __PX4_FREERTOS */
 
 #include "sem.h"
 
@@ -120,9 +157,96 @@ __EXPORT ssize_t	px4_write(int fd, const void *buffer, size_t buflen);
 __EXPORT int		px4_ioctl(int fd, int cmd, unsigned long arg);
 __EXPORT int		px4_poll(px4_pollfd_struct_t *fds, unsigned int nfds, int timeout);
 __EXPORT int		px4_access(const char *pathname, int mode);
+#if defined(__PX4_FREERTOS)
+__EXPORT off_t		px4_lseek(int fd, off_t offset, int whence);
+__EXPORT int		px4_fsync(int fd);
+__EXPORT int		px4_unlink(const char *pathname);
+#endif /* __PX4_FREERTOS */
 __EXPORT px4_task_t	px4_getpid(void);
 
 __END_DECLS
+#if defined(__PX4_FREERTOS)
+static inline int px4_file_access(const char *pathname, int mode)
+{
+	return px4_access(pathname, mode);
+}
+static inline int px4_file_open(const char *path, int flags, mode_t mode)
+{
+	return px4_open(path, flags, mode);
+}
+static inline int px4_file_close(int fd)
+{
+	return px4_close(fd);
+}
+static inline ssize_t px4_file_read(int fd, void *buffer, size_t buflen)
+{
+	return px4_read(fd, buffer, buflen);
+}
+static inline ssize_t px4_file_write(int fd, const void *buffer, size_t buflen)
+{
+	return px4_write(fd, buffer, buflen);
+}
+static inline off_t px4_file_lseek(int fd, off_t offset, int whence)
+{
+	return px4_lseek(fd, offset, whence);
+}
+static inline int px4_file_fsync(int fd)
+{
+	return px4_fsync(fd);
+}
+static inline int px4_file_unlink(const char *pathname)
+{
+	return px4_unlink(pathname);
+}
+__BEGIN_DECLS
+int px4_pthread_setname_np(pthread_t thread, const char *name);
+int pthread_setname_np(pthread_t thread, const char *name);
+__END_DECLS
+#ifndef __PX4_PTHREAD_SETNAME_SOURCE
+static inline int px4_pthread_setname_np_current(const char *name)
+{
+	return px4_pthread_setname_np(pthread_self(), name);
+}
+#define PX4_PTHREAD_SETNAME_DISPATCH(_1, _2, _FN, ...) _FN
+#undef pthread_setname_np
+#define pthread_setname_np(...) \
+	PX4_PTHREAD_SETNAME_DISPATCH(__VA_ARGS__, px4_pthread_setname_np, px4_pthread_setname_np_current)(__VA_ARGS__)
+#endif
+#ifndef HAVE_PTHREAD_ATTR_SETINHERITSCHED
+int pthread_attr_setinheritsched(pthread_attr_t *attr, int policy);
+#endif
+#ifndef HAVE_PTHREAD_ATTR_SETCHEDPOLICY
+int pthread_attr_setschedpolicy(pthread_attr_t *attr, int policy);
+#endif
+int pthread_cancel(pthread_t thread);
+int pthread_setcancelstate(int state, int *oldstate);
+int pthread_setcanceltype(int type, int *oldtype);
+int pthread_kill(pthread_t thread, int sig);
+long sysconf(int name);
+__BEGIN_DECLS
+int open(const char *path, int flags, ...);
+int close(int fd);
+int fsync(int fd);
+int unlink(const char *pathname);
+int access(const char *pathname, int mode);
+off_t lseek(int fd, off_t offset, int whence);
+ssize_t read(int fd, void *buffer, size_t buflen);
+ssize_t write(int fd, const void *buffer, size_t buflen);
+int truncate(const char *path, off_t length);
+int rmdir(const char *path);
+int mkdir(const char *path, mode_t mode);
+int cfsetspeed(struct termios *termios_p, speed_t speed);
+int tcflush(int fd, int queue_selector);
+struct tm *gmtime_r(const time_t *timer, struct tm *result);
+struct tm *localtime_r(const time_t *timer, struct tm *result);
+__END_DECLS
+#ifndef _SC_PAGESIZE
+#define _SC_PAGESIZE 30
+#endif
+#ifndef STDOUT_FILENO
+#define STDOUT_FILENO 1
+#endif
+#endif /* __PX4_FREERTOS */
 #else
 #error "No TARGET OS Provided"
 #endif

@@ -60,7 +60,11 @@ read_x(bson_decoder_t decoder, void *p, size_t s)
 	CODER_CHECK(decoder);
 
 	if (decoder->fd > -1) {
+#if defined(__PX4_FREERTOS)
+		ssize_t ret = px4_read(decoder->fd, p, s);
+#else
 		int ret = ::read(decoder->fd, p, s);
+#endif /* __PX4_FREERTOS */
 
 		if (ret == s) {
 			decoder->total_decoded_size += ret;
@@ -350,7 +354,11 @@ write_x(bson_encoder_t encoder, const void *p, size_t s)
 
 	/* bson file encoder (non-buffered) */
 	if (encoder->fd > -1 && encoder->buf == nullptr) {
+#if defined(__PX4_FREERTOS)
+		ssize_t ret = px4_write(encoder->fd, p, s);
+#else
 		int ret = ::write(encoder->fd, p, s);
+#endif /* __PX4_FREERTOS */
 
 		if (ret == s) {
 			encoder->total_document_size += ret;
@@ -367,9 +375,14 @@ write_x(bson_encoder_t encoder, const void *p, size_t s)
 		if (encoder->fd > -1) {
 			// write to disk
 			debug("writing buffer (%d) to disk", encoder->bufpos);
+#if defined(__PX4_FREERTOS)
+			ssize_t ret = px4_write(encoder->fd, encoder->buf, encoder->bufpos);
+			if (ret == (ssize_t)encoder->bufpos) {
+#else
 			int ret = ::write(encoder->fd, encoder->buf, encoder->bufpos);
 
 			if (ret == (int)encoder->bufpos) {
+#endif /* __PX4_FREERTOS */
 				// reset buffer to beginning and continue
 				encoder->bufpos = 0;
 				encoder->total_document_size += ret;
@@ -381,7 +394,11 @@ write_x(bson_encoder_t encoder, const void *p, size_t s)
 				break;
 
 			} else {
+#if defined(__PX4_FREERTOS)
+				PX4_ERR("file write error %ld, errno:%d (%s)", (long)ret, errno, strerror(errno));
+#else
 				PX4_ERR("file write error %d, errno:%d (%s)", ret, errno, strerror(errno));
+#endif /* __PX4_FREERTOS */
 				CODER_KILL(encoder, "file write error");
 			}
 		}
@@ -507,7 +524,11 @@ bson_encoder_fini(bson_encoder_t encoder)
 
 	if (encoder->fd > -1 && encoder->buf != nullptr && encoder->bufpos > 0) {
 		/* write final buffer to disk */
+#if defined(__PX4_FREERTOS)
+		ssize_t ret = px4_write(encoder->fd, encoder->buf, encoder->bufpos);
+#else
 		int ret = ::write(encoder->fd, encoder->buf, encoder->bufpos);
+#endif /* __PX4_FREERTOS */
 
 		if (ret == (int)encoder->bufpos) {
 			encoder->total_document_size += ret;
@@ -522,13 +543,22 @@ bson_encoder_fini(bson_encoder_t encoder)
 	const int32_t bson_doc_bytes = encoder->total_document_size;
 
 	if (encoder->fd > -1) {
+#if defined(__PX4_FREERTOS)
+		if ((px4_lseek(encoder->fd, 0, SEEK_SET) != 0)
+		    || (px4_write(encoder->fd, &bson_doc_bytes, sizeof(bson_doc_bytes)) != sizeof(bson_doc_bytes))) {
+#else
 		if ((lseek(encoder->fd, 0, SEEK_SET) != 0)
 		    || (::write(encoder->fd, &bson_doc_bytes, sizeof(bson_doc_bytes)) != sizeof(bson_doc_bytes))) {
+#endif /* __PX4_FREERTOS */
 
 			CODER_KILL(encoder, "write error on document length");
 		}
 
+#if defined(__PX4_FREERTOS)
+		px4_fsync(encoder->fd);
+#else
 		::fsync(encoder->fd);
+#endif /* __PX4_FREERTOS */
 
 	} else if (encoder->buf != nullptr) {
 		/* update buffer length */

@@ -42,13 +42,19 @@
 
 #if defined(CONFIG_SPI)
 
-#ifdef __PX4_LINUX
+#ifdef __PX4_LINUX || defined(__PX4_FREERTOS)
 
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#ifdef __PX4_LINUX
 #include <linux/types.h>
 #include <linux/spi/spidev.h>
+#elif defined(__PX4_FREERTOS)
+#include <posix_compat/spi/spidev.h>
+#include <cerrno>
+#include <cstring>
+#endif
 
 #include <px4_platform_common/i2c_spi_buses.h>
 #include <px4_platform_common/px4_config.h>
@@ -87,8 +93,13 @@ int
 SPI::init()
 {
 	// Open the actual SPI device
+#if defined(__PX4_FREERTOS)
+	char dev_path[32];
+	snprintf(dev_path, sizeof(dev_path), "/dev/spidev%i.%u", get_device_bus(), static_cast<unsigned int>(PX4_SPI_DEV_ID(_device)));
+#else
 	char dev_path[16];
 	snprintf(dev_path, sizeof(dev_path), "/dev/spidev%i.%i", get_device_bus(), PX4_SPI_DEV_ID(_device));
+#endif /* __PX4_FREERTOS */
 	DEVICE_DEBUG("%s", dev_path);
 	_fd = ::open(dev_path, O_RDWR);
 
@@ -114,8 +125,11 @@ SPI::init()
 	}
 
 	/* tell the world where we are */
+#if defined(__PX4_FREERTOS)
+	DEVICE_DEBUG("on SPI bus %d at %u (%lu KHz)", get_device_bus(), static_cast<unsigned int>(PX4_SPI_DEV_ID(_device)), static_cast<unsigned long>(_frequency / 1000));
+#else
 	DEVICE_DEBUG("on SPI bus %d at %d (%u KHz)", get_device_bus(), PX4_SPI_DEV_ID(_device), _frequency / 1000);
-
+#endif /* __PX4_FREERTOS */
 	return PX4_OK;
 }
 
@@ -197,5 +211,5 @@ SPI::transferhword(uint16_t *send, uint16_t *recv, unsigned len)
 
 } // namespace device
 
-#endif // __PX4_LINUX
+#endif // __PX4_LINUX || __PX4_FREERTOS
 #endif // CONFIG_SPI

@@ -124,6 +124,10 @@ private:
 	systemlib::Hysteresis _stick_disarm_hysteresis{false};
 	systemlib::Hysteresis _stick_kill_hysteresis{false};
 	systemlib::Hysteresis _button_arm_hysteresis{false};
+#if defined(__PX4_FREERTOS)
+	systemlib::Hysteresis _arm_switch_hysteresis{false};   // debounce for arm switch (not button)
+	systemlib::Hysteresis _kill_switch_hysteresis{false};  // debounce for kill switch
+#endif /* __PX4_FREERTOS */
 
 	MovingDiff _roll_diff{};
 	MovingDiff _pitch_diff{};

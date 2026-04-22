@@ -322,6 +322,8 @@ uint32_t px4_os_version(void)
 
 #elif defined(__PX4_NUTTX)
 	return version_tag_to_number(NUTTX_GIT_TAG_STR);
+#elif defined(__PX4_FREERTOS)
+	return 0;
 #else
 # error "px4_os_version not implemented for current OS"
 #endif
@@ -331,6 +333,8 @@ const char *px4_os_version_string(void)
 {
 #if defined(__PX4_NUTTX)
 	return NUTTX_GIT_VERSION_STR;
+#elif defined(__PX4_FREERTOS)
+	return tskKERNEL_VERSION_NUMBER;
 #else
 	return NULL;
 #endif
@@ -346,6 +350,8 @@ const char *px4_os_name(void)
 	return "QuRT";
 #elif defined(__PX4_NUTTX)
 	return "NuttX";
+#elif defined(__PX4_FREERTOS)
+	return "FreeRTOS";
 #elif defined(__PX4_CYGWIN)
 	return "Cygwin";
 #else

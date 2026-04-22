@@ -64,10 +64,14 @@ typedef int px4_task_t;
 #include <pthread.h>
 #include <sched.h>
 
+#if defined(__PX4_FREERTOS) && !defined(SCHED_FIFO)
+#define SCHED_FIFO 0
+#endif /* __PX4_FREERTOS */
+
 /** Default scheduler type */
 #define SCHED_DEFAULT	SCHED_FIFO
 
-#if defined(__PX4_LINUX) || defined(__PX4_DARWIN) || defined(__PX4_CYGWIN) || defined(__PX4_ROS2)
+#if defined(__PX4_LINUX) || defined(__PX4_DARWIN) || defined(__PX4_CYGWIN) || defined(__PX4_ROS2) || defined(__PX4_FREERTOS)
 
 #define SCHED_PRIORITY_MAX sched_get_priority_max(SCHED_FIFO)
 #define SCHED_PRIORITY_MIN sched_get_priority_min(SCHED_FIFO)
@@ -99,6 +103,12 @@ typedef struct {
 #else
 #error "No target OS defined"
 #endif
+#if defined(__PX4_FREERTOS)
+__BEGIN_DECLS
+__EXPORT int px4_board_map_priority(int priority);
+__EXPORT int px4_task_adjust_priority(int priority);
+__END_DECLS
+#endif /* __PX4_FREERTOS */
 
 // PX4 work queue starting high priority
 #define PX4_WQ_HP_BASE (SCHED_PRIORITY_MAX - 15)

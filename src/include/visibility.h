@@ -40,6 +40,14 @@
  */
 
 #pragma once
+#if defined(__PX4_FREERTOS)
+/* FreeRTOSCustomConfig.h must be included before FreeRTOS.h */
+#if __has_include("FreeRTOSCustomConfig.h")
+#include "FreeRTOSCustomConfig.h"
+#endif
+#include "FreeRTOS.h"
+#include "semphr.h"
+#endif /* __PX4_FREERTOS */
 
 #ifdef __EXPORT
 #  undef __EXPORT
@@ -88,6 +96,9 @@
 /* For SITL lockstep we fake the clock, sleeping, and timedwaits
  * Therefore, we prefix these syscalls with system_. */
 #include <time.h>
+#if defined(__PX4_FREERTOS)
+#include <signal.h>
+#endif /* __PX4_FREERTOS */
 /* We can't poison clock_settime/clock_gettime because they are
  * used in DriverFramework. */
 
@@ -97,6 +108,9 @@
 // symbols in cannode.
 // We can't include this for Qurt because it uses it's own thread primitives
 #endif // !defined(__PX4_NUTTX) && !defined(__PX4_QURT)
+#if defined(__PX4_FREERTOS) && !defined(SIGCONT)
+#define SIGCONT SIGUSR1
+#endif /* __PX4_FREERTOS */
 #define system_pthread_cond_timedwait pthread_cond_timedwait
 /* We can't poison pthread_cond_timedwait because it seems to be used in the
  * <string> include. */

@@ -61,6 +61,8 @@ function(px4_add_common_flags)
 
 		-fno-strict-aliasing
 
+		-fstack-usage		# generate .su files with stack usage info
+
 		# visibility
 		-fvisibility=hidden
 		-include visibility.h

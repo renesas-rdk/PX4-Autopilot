@@ -225,4 +225,10 @@ if(${PX4_PLATFORM} STREQUAL "posix" OR ${PX4_PLATFORM} STREQUAL "ros2")
 	target_include_directories(parameters PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../platforms/posix/include/")
 endif()
 
+if(EXISTS "${PX4_BOARD_DIR}/src/hal/drivers/rzv_fsp/io_worker.h")
+	target_include_directories(parameters PRIVATE "${PX4_BOARD_DIR}/src/hal/drivers/rzv_fsp")
+endif()
+
+px4_register_archive(parameters)
+
 px4_add_functional_gtest(SRC ParameterTest.cpp LINKLIBS parameters)

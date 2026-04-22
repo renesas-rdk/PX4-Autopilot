@@ -41,8 +41,12 @@
 #include <px4_platform_common/defines.h>
 #include <px4_platform_common/workqueue.h>
 #include <px4_platform_common/tasks.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/sem.h>
 
+#else
 #include <signal.h>
+#endif /* __PX4_FREERTOS */
 #include <stdint.h>
 #include <queue.h>
 #include <stdio.h>
@@ -126,8 +130,12 @@ int hrt_work_queue(struct work_s *work, worker_t worker, void *arg, uint32_t del
 	dq_addlast(&work->dq, &wqueue->q);
 
 	if (px4_getpid() != wqueue->pid) { /* only need to wake up if called from a different thread */
+#if defined(__PX4_FREERTOS)
+		px4_sem_post(&wqueue->wait_sem);      /* Wake up the worker thread */
+#else
 		//wqueue->pid == own task? -> don't signal
 		px4_task_kill(wqueue->pid, SIGCONT);      /* Wake up the worker thread */
+#endif /* __PX4_FREERTOS */
 	}
 
 	hrt_work_unlock();

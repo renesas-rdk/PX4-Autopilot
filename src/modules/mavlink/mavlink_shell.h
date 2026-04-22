@@ -46,6 +46,13 @@
 
 #pragma once
 
+#if defined(__PX4_FREERTOS)
+#include <FreeRTOS.h>
+#include <semphr.h>
+#include <stream_buffer.h>
+extern "C" void mavlink_shell_stdout_hook(const char *buffer, size_t len);
+extern "C" bool mavlink_shell_stdout_active(void);
+#endif /* __PX4_FREERTOS */
 class MavlinkShell
 {
 public:
@@ -87,10 +94,22 @@ private:
 	px4::atomic<uint8_t> _target_sysid{};
 	px4::atomic<uint8_t> _target_compid{};
 
+#if defined(__PX4_FREERTOS)
+	void shell_thread_main();
+	void append_output(const char *buffer, size_t len);
+	void append_prompt();
+	friend void ::mavlink_shell_stdout_hook(const char *buffer, size_t len);
+	px4::atomic_bool _should_exit{false};
+	StreamBufferHandle_t _rx_stream{nullptr};
+	StreamBufferHandle_t _tx_stream{nullptr};
+	SemaphoreHandle_t _tx_mutex{nullptr};
+	px4_task_t _task{-1};
+#else
 	int _to_shell_fd = -1; /** fd to write to the shell */
 	int _from_shell_fd = -1; /** fd to read from the shell */
 	int _shell_fds[2] = { -1, -1}; /** stdin & out used by the shell */
 	px4_task_t _task;
+#endif /* __PX4_FREERTOS */
 
 	static int shell_start_thread(int argc, char *argv[]);
 

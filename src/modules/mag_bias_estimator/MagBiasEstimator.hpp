@@ -103,9 +103,16 @@ private:
 	uint8_t _arming_state{0};
 	bool _system_calibrating{false};
 
+#if defined(__PX4_FREERTOS)
+	hrt_abstime _startup_time{0};
+#endif /* __PX4_FREERTOS */
+
 	perf_counter_t _cycle_perf{perf_alloc(PC_ELAPSED, MODULE_NAME": cycle")};
 
 	DEFINE_PARAMETERS(
+#if defined(__PX4_FREERTOS)
+		(ParamInt<px4::params::MBE_ENABLE>) _param_mbe_enable,
+#endif /* __PX4_FREERTOS */
 		(ParamFloat<px4::params::MBE_LEARN_GAIN>) _param_mbe_learn_gain
 	)
 };

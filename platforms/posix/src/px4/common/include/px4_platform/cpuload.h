@@ -33,7 +33,11 @@
 
 #pragma once
 
+#if defined(__PX4_FREERTOS)
+#define CONFIG_FS_PROCFS_MAX_TASKS 96
+#else
 #define CONFIG_FS_PROCFS_MAX_TASKS 64
+#endif /* __PX4_FREERTOS */
 
 __BEGIN_DECLS
 

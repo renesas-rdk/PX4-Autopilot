@@ -33,3 +33,7 @@ struct file_t {
 extern "C" __EXPORT int register_driver(const char *name, const cdev::px4_file_operations_t *fops,
 					cdev::mode_t mode, void *data);
 extern "C" __EXPORT int unregister_driver(const char *path);
+#if defined(__PX4_FREERTOS)
+extern "C" __EXPORT void px4_rzv_register_default_uart_devices_once(void);
+extern "C" __EXPORT int px4_ioctl(int fd, int cmd, unsigned long arg);
+#endif /* __PX4_FREERTOS */

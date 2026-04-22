@@ -23,13 +23,18 @@ uxrObjectId topic_id_from_orb(ORB_ID orb_id, uint8_t instance = 0)
 	return uxrObjectId{};
 }
 
+#if defined(__PX4_FREERTOS)
+static bool generate_topic_name(char *topic_name, const char *client_namespace, const char *topic)
+#else
 static bool generate_topic_name(char *topic_name, const char *client_namespace, const char *topic,
 				uint32_t message_version = 0)
+#endif /* __PX4_FREERTOS */
 {
 	if (topic[0] == '/') {
 		topic++;
 	}
 
+#if !defined(__PX4_FREERTOS)
 	char version[16];
 
 	if (message_version != 0) {
@@ -40,23 +45,38 @@ static bool generate_topic_name(char *topic_name, const char *client_namespace, 
 		version[0] = '\0';
 	}
 
+#endif /* __PX4_FREERTOS */
 	if (client_namespace != nullptr) {
+#if defined(__PX4_FREERTOS)
+		int ret = snprintf(topic_name, TOPIC_NAME_SIZE, "rt/%s/%s", client_namespace, topic);
+#else
 		int ret = snprintf(topic_name, TOPIC_NAME_SIZE, "rt/%s/%s%s", client_namespace, topic, version);
+#endif /* __PX4_FREERTOS */
 		return (ret > 0 && ret < TOPIC_NAME_SIZE);
 	}
 
+#if defined(__PX4_FREERTOS)
+	int ret = snprintf(topic_name, TOPIC_NAME_SIZE, "rt/%s", topic);
+#else
 	int ret = snprintf(topic_name, TOPIC_NAME_SIZE, "rt/%s%s", topic, version);
+#endif /* __PX4_FREERTOS */
 	return (ret > 0 && ret < TOPIC_NAME_SIZE);
 }
 
 static bool create_data_writer(uxrSession *session, uxrStreamId reliable_out_stream_id, uxrObjectId participant_id,
-			       ORB_ID orb_id, const char *client_namespace, const char *topic, uint32_t message_version, const char *type_name,
+			       ORB_ID orb_id, const char *client_namespace, const char *topic,
+			       uint32_t message_version,
+			       const char *type_name,
 			       uxrObjectId &datawriter_id)
 {
 	// topic
 	char topic_name[TOPIC_NAME_SIZE];
 
+#if defined(__PX4_FREERTOS)
+	if (!generate_topic_name(topic_name, client_namespace, topic)) {
+#else
 	if (!generate_topic_name(topic_name, client_namespace, topic, message_version)) {
+#endif /* __PX4_FREERTOS */
 		PX4_ERR("topic path too long");
 		return false;
 	}
@@ -64,12 +84,18 @@ static bool create_data_writer(uxrSession *session, uxrStreamId reliable_out_str
 	uxrObjectId topic_id = topic_id_from_orb(orb_id);
 	uint16_t topic_req = uxr_buffer_create_topic_bin(session, reliable_out_stream_id, topic_id, participant_id, topic_name,
 			     type_name, UXR_REPLACE);
+#if defined(__PX4_FREERTOS)
+	PX4_DEBUG("DW[%s] buffered topic req_id=%u", topic_name, topic_req);
+#endif /* __PX4_FREERTOS */
 
 
 	// publisher
 	uxrObjectId publisher_id = uxr_object_id(topic_id.id, UXR_PUBLISHER_ID);
 	uint16_t publisher_req = uxr_buffer_create_publisher_bin(session, reliable_out_stream_id, publisher_id, participant_id,
 				 UXR_REPLACE);
+#if defined(__PX4_FREERTOS)
+	PX4_DEBUG("DW[%s] buffered publisher req_id=%u", topic_name, publisher_req);
+#endif /* __PX4_FREERTOS */
 
 
 	// data writer
@@ -84,18 +110,48 @@ static bool create_data_writer(uxrSession *session, uxrStreamId reliable_out_str
 
 	uint16_t datawriter_req = uxr_buffer_create_datawriter_bin(session, reliable_out_stream_id, datawriter_id, publisher_id,
 				  topic_id, qos, UXR_REPLACE);
+#if defined(__PX4_FREERTOS)
+	PX4_DEBUG("DW[%s] buffered datawriter req_id=%u", topic_name, datawriter_req);
+#endif /* __PX4_FREERTOS */
 
 	// Send create entities message and wait its status
 	uint16_t requests[3] {topic_req, publisher_req, datawriter_req};
 	uint8_t status[3];
+#if defined(__PX4_FREERTOS)
+	bool result = false;
+	int retry_count = 0;
+	const int MAX_RETRIES = 3;
 
+	// Retry loop with increasing timeout
+	for (retry_count = 0; retry_count < MAX_RETRIES && !result; retry_count++) {
+		// Initialize status to UXR_STATUS_NONE (255) before each attempt
+		status[0] = status[1] = status[2] = 255;
+
+		uint32_t timeout_ms = 1000 + (retry_count * 500);  // 1s, 1.5s, 2s
+
+		result = uxr_run_session_until_all_status(session, timeout_ms, requests, status, 3);
+
+		if (!result && retry_count < MAX_RETRIES - 1) {
+			px4_usleep(200000);  // 200ms delay before retry
+		}
+	}
+
+	if (!result) {
+		PX4_ERR("DW[%s] FAILED after %d attempts: status=[%i %i %i]",
+		        topic_name, MAX_RETRIES, status[0], status[1], status[2]);
+#else
 	if (!uxr_run_session_until_all_status(session, 1000, requests, status, 3)) {
 		PX4_ERR("create entities failed: %s, topic: %i publisher: %i datawriter: %i",
 			topic_name, status[0], status[1], status[2]);
+#endif /* __PX4_FREERTOS */
 		return false;
 
 	} else {
+#if defined(__PX4_FREERTOS)
+		PX4_DEBUG("DW[%s] succeeded on attempt %d, topic id: %d", topic_name, retry_count, topic_id.id);
+#else
 		PX4_INFO("successfully created %s data writer, topic id: %d", topic_name, topic_id.id);
+#endif /* __PX4_FREERTOS */
 	}
 
 	return true;
@@ -109,7 +165,11 @@ static bool create_data_reader(uxrSession *session, uxrStreamId reliable_out_str
 	// topic
 	char topic_name[TOPIC_NAME_SIZE];
 
+#if defined(__PX4_FREERTOS)
+	if (!generate_topic_name(topic_name, client_namespace, topic)) {
+#else
 	if (!generate_topic_name(topic_name, client_namespace, topic, message_version)) {
+#endif /* __PX4_FREERTOS */
 		PX4_ERR("topic path too long");
 		return false;
 	}
@@ -121,12 +181,18 @@ static bool create_data_reader(uxrSession *session, uxrStreamId reliable_out_str
 	uxrObjectId topic_id = uxr_object_id(id, UXR_TOPIC_ID);
 	uint16_t topic_req = uxr_buffer_create_topic_bin(session, reliable_out_stream_id, topic_id, participant_id, topic_name,
 			     type_name, UXR_REPLACE);
+#if defined(__PX4_FREERTOS)
+	PX4_DEBUG("DR[%s] buffered topic req_id=%u", topic_name, topic_req);
+#endif /* __PX4_FREERTOS */
 
 
 	// subscriber
 	uxrObjectId subscriber_id = uxr_object_id(id, UXR_SUBSCRIBER_ID);
 	uint16_t subscriber_req = uxr_buffer_create_subscriber_bin(session, reliable_out_stream_id, subscriber_id,
 				  participant_id, UXR_REPLACE);
+#if defined(__PX4_FREERTOS)
+	PX4_DEBUG("DR[%s] buffered subscriber req_id=%u", topic_name, subscriber_req);
+#endif /* __PX4_FREERTOS */
 
 
 	// data reader
@@ -141,15 +207,45 @@ static bool create_data_reader(uxrSession *session, uxrStreamId reliable_out_str
 
 	uint16_t datareader_req = uxr_buffer_create_datareader_bin(session, reliable_out_stream_id, datareader_id,
 				  subscriber_id, topic_id, qos, UXR_REPLACE);
+#if defined(__PX4_FREERTOS)
+	PX4_DEBUG("DR[%s] buffered datareader req_id=%u", topic_name, datareader_req);
+#endif /* __PX4_FREERTOS */
 
 	uint16_t requests[3] {topic_req, subscriber_req, datareader_req};
 	uint8_t status[3];
+#if defined(__PX4_FREERTOS)
+	bool result = false;
+	int retry_count = 0;
+	const int MAX_RETRIES = 3;
 
+	// Retry loop with increasing timeout
+	for (retry_count = 0; retry_count < MAX_RETRIES && !result; retry_count++) {
+		// Initialize status to UXR_STATUS_NONE (255) before each attempt
+		status[0] = status[1] = status[2] = 255;
+
+		uint32_t timeout_ms = 1000 + (retry_count * 500);  // 1s, 1.5s, 2s
+
+		result = uxr_run_session_until_all_status(session, timeout_ms, requests, status, 3);
+
+		if (!result && retry_count < MAX_RETRIES - 1) {
+			px4_usleep(200000);  // 200ms delay before retry
+		}
+	}
+
+	if (!result) {
+		PX4_ERR("DR[%s] FAILED after %d attempts: status=[%i %i %i]",
+		        topic_name, MAX_RETRIES, status[0], status[1], status[2]);
+#else
 	if (!uxr_run_session_until_all_status(session, 1000, requests, status, 3)) {
 		PX4_ERR("create entities failed: %s %i %i %i", topic_name,
 			status[0], status[1], status[2]);
+#endif /* __PX4_FREERTOS */
 		return false;
 	}
+#if defined(__PX4_FREERTOS)
+
+	PX4_DEBUG("DR[%s] succeeded on attempt %d", topic_name, retry_count);
+#endif /* __PX4_FREERTOS */
 
 	uxrDeliveryControl delivery_control{};
 	delivery_control.max_samples = UXR_MAX_SAMPLES_UNLIMITED;

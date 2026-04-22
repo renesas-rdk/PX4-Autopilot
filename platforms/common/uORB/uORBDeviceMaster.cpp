@@ -43,6 +43,9 @@
 
 #ifndef __PX4_QURT // QuRT has no poll()
 #include <poll.h>
+#if defined(__PX4_FREERTOS)
+#include <unistd.h>
+#endif /* __PX4_FREERTOS */
 #endif // PX4_QURT
 
 uORB::DeviceMaster::DeviceMaster()

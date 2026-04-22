@@ -48,6 +48,9 @@
 
 #include <limits.h>
 #include <string.h>
+#if defined(__PX4_FREERTOS)
+#include <task.h>
+#endif /* __PX4_FREERTOS */
 
 using namespace time_literals;
 
@@ -231,6 +234,9 @@ WorkQueueRunner(void *context)
 {
 	wq_config_t *config = static_cast<wq_config_t *>(context);
 	WorkQueue wq(*config);
+#if defined(__PX4_FREERTOS)
+	wq.set_task_handle(xTaskGetCurrentTaskHandle());
+#endif /* __PX4_FREERTOS */
 
 	// add to work queue list
 	_wq_manager_wqs_list->add(&wq);
@@ -275,12 +281,19 @@ WorkQueueManagerRun(int, char **)
 			// On posix system , the desired stacksize round to the nearest multiplier of the system pagesize
 			// It is a requirement of the  pthread_attr_setstacksize* function
 			const unsigned int page_size = sysconf(_SC_PAGESIZE);
+#if defined(__PX4_FREERTOS)
+			const size_t stacksize_adj = math::max(static_cast<size_t>(PTHREAD_STACK_MIN), static_cast<size_t>(PX4_STACK_ADJUSTED(wq->stacksize)));
+#else
 			const size_t stacksize_adj = math::max((int)PTHREAD_STACK_MIN, PX4_STACK_ADJUSTED(wq->stacksize));
+#endif /* __PX4_FREERTOS */
 			const size_t stacksize = (stacksize_adj + page_size - (stacksize_adj % page_size));
 #endif
 
 			// priority
 			int sched_priority = sched_get_priority_max(SCHED_FIFO) + wq->relative_priority;
+#if defined(__PX4_FREERTOS)
+			sched_priority = px4_board_map_priority(sched_priority);
+#endif	// __PX4_FREERTOS
 
 			// use pthreads for NuttX flat and posix builds. For NuttX protected build, use tasks or kernel threads
 #if !defined(__PX4_NUTTX) || defined(CONFIG_BUILD_FLAT)
@@ -495,3 +508,23 @@ WorkQueueManagerStatus()
 }
 
 } // namespace px4
+#if defined(__PX4_FREERTOS)
+extern "C" __EXPORT const char *px4_work_queue_current_item_name(void *task_handle)
+{
+	using namespace px4;
+
+	if ((task_handle == nullptr) || !_wq_manager_running.load() || (_wq_manager_wqs_list == nullptr)) {
+		return nullptr;
+	}
+
+	LockGuard lg{_wq_manager_wqs_list->mutex()};
+
+	for (WorkQueue *wq : *_wq_manager_wqs_list) {
+		if (wq->task_handle() == task_handle) {
+			return wq->current_work_item_name();
+		}
+	}
+
+	return nullptr;
+}
+#endif /* __PX4_FREERTOS */

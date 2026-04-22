@@ -42,6 +42,35 @@
 #include <sys/ioctl.h>
 #include <px4_boardconfig.h>
 
+#if defined(__PX4_FREERTOS)
+#ifndef S_IRUSR
+#define S_IRUSR 0400
+#endif
+#ifndef S_IWUSR
+#define S_IWUSR 0200
+#endif
+#ifndef S_IRGRP
+#define S_IRGRP 0040
+#endif
+#ifndef S_IWGRP
+#define S_IWGRP 0020
+#endif
+#ifndef S_IROTH
+#define S_IROTH 0004
+#endif
+#ifndef S_IWOTH
+#define S_IWOTH 0002
+#endif
+#ifndef S_IRWXU
+#define S_IRWXU 0700
+#endif
+#ifndef S_IRWXG
+#define S_IRWXG 0070
+#endif
+#ifndef S_IRWXO
+#define S_IRWXO 0007
+#endif
+#endif /* __PX4_FREERTOS */
 
 /****************************************************************************
  * Defines for all platforms.
@@ -88,6 +117,11 @@ static inline constexpr bool PX4_ISFINITE(double x) { return __builtin_isfinite(
 #define PX4_O_MODE_600 (S_IRUSR | S_IWUSR)
 
 // NuttX _IOC is equivalent to Linux _IO
+#if defined(__PX4_FREERTOS)
+#ifndef _IO
+#define _IO(x,y) (((x) << 8) | (y))
+#endif
+#endif /* __PX4_FREERTOS */
 #define _PX4_IOC(x,y) _IO(x,y)
 
 #define USEC_PER_TICK (1000000/PX4_TICKS_PER_SEC)

@@ -46,6 +46,11 @@
 
 #include <math.h>
 #include <poll.h>
+#if defined(__PX4_FREERTOS)
+#include <cstdio>
+#include <px4_platform_common/posix.h>
+#include <px4_platform_common/tasks.h>
+#endif /* __PX4_FREERTOS */
 
 #ifdef CONFIG_NET
 #include <net/if.h>
@@ -67,6 +72,13 @@
 #define MAVLINK_RECEIVER_NET_ADDED_STACK 1360
 #else
 #define MAVLINK_RECEIVER_NET_ADDED_STACK 0
+#if defined(__PX4_FREERTOS)
+#include <FreeRTOS.h>
+#include <task.h>
+extern "C" {
+#include <rzv_fsp/uart_transport.h>
+}
+#endif /* __PX4_FREERTOS */
 #endif
 
 MavlinkReceiver::~MavlinkReceiver()
@@ -1980,9 +1992,11 @@ MavlinkReceiver::handle_message_tunnel(mavlink_message_t *msg)
 	static_assert(sizeof(tunnel.payload) == sizeof(mavlink_tunnel.payload), "mavlink_tunnel.payload size mismatch");
 
 	switch (mavlink_tunnel.payload_type) {
+#ifdef MAV_TUNNEL_PAYLOAD_TYPE_MODALAI_ESC_UART_PASSTHRU
 	case MAV_TUNNEL_PAYLOAD_TYPE_MODALAI_ESC_UART_PASSTHRU:
 		_esc_serial_passthru_pub.publish(tunnel);
 		break;
+#endif
 
 	default:
 		_mavlink_tunnel_pub.publish(tunnel);
@@ -2249,11 +2263,12 @@ MavlinkReceiver::set_message_interval(int msgId, float interval, float param3, f
 		PX4_ERR("SET_MESSAGE_INTERVAL requested param4 not supported.");
 		return PX4_ERROR;
 	}
-
+#if !defined(__PX4_FREERTOS)
 	if (PX4_ISFINITE(param7) && (int)(param7 + 0.5f) != 0) {
 		PX4_ERR("SET_MESSAGE_INTERVAL response target not supported.");
 		return PX4_ERROR;
 	}
+#endif /* __PX4_FREERTOS */
 
 	// configure_stream wants a rate (msgs/second), so convert here.
 	float rate = 0.f;
@@ -3111,9 +3126,23 @@ MavlinkReceiver::run()
 {
 	/* set thread name */
 	{
+#if defined(__PX4_FREERTOS)
+		char thread_name[16] = {};
+		(void)snprintf(thread_name, sizeof(thread_name), "mavrx_%02d", _mavlink.get_instance_id());
+		(void)pthread_setname_np(thread_name);
+
+		TaskHandle_t self_handle = xTaskGetCurrentTaskHandle();
+
+		if (self_handle != nullptr) {
+			const UBaseType_t watermark_words = uxTaskGetStackHighWaterMark(self_handle);
+			const unsigned stack_free_bytes = (unsigned)(watermark_words * sizeof(StackType_t));
+			PX4_DEBUG("[MAVLINK_RX] start stack free=%u bytes", stack_free_bytes);
+		}
+#else
 		char thread_name[17];
 		snprintf(thread_name, sizeof(thread_name), "mavlink_rcv_if%d", _mavlink.get_instance_id());
 		px4_prctl(PR_SET_NAME, thread_name, px4_getpid());
+#endif /* __PX4_FREERTOS */
 	}
 
 	// poll timeout in ms. Also defines the max update frequency of the mission & param manager, etc.
@@ -3131,6 +3160,7 @@ MavlinkReceiver::run()
 #endif
 	mavlink_message_t msg;
 
+#if !defined(__PX4_FREERTOS)
 	struct pollfd fds[1] = {};
 
 	if (_mavlink.get_protocol() == Protocol::SERIAL) {
@@ -3148,6 +3178,7 @@ MavlinkReceiver::run()
 	}
 
 #endif // MAVLINK_UDP
+#endif /* __PX4_FREERTOS */
 
 	ssize_t nread = 0;
 	hrt_abstime last_send_update = 0;
@@ -3164,6 +3195,7 @@ MavlinkReceiver::run()
 			updateParams();
 		}
 
+#if !defined(__PX4_FREERTOS)
 		int ret = poll(&fds[0], 1, timeout);
 
 		if (ret > 0) {
@@ -3210,6 +3242,92 @@ MavlinkReceiver::run()
 			// only start accepting messages on UDP once we're sure who we talk to
 			if (_mavlink.get_protocol() != Protocol::UDP || _mavlink.get_client_source_initialized()) {
 #endif // MAVLINK_UDP
+#else
+		// FreeRTOS: Simple UART-only implementation using UART ring buffer
+		if (_mavlink.get_protocol() == Protocol::SERIAL) {
+			// Map device name to UART channel number (NOT file descriptor!)
+			// _mavlink.get_uart_fd() returns fd (e.g., 6), we need channel (0-3)
+			const char *device_name = _mavlink.get_device_name();
+			int channel = rzv_uart_transport_map_device(device_name, nullptr, nullptr);
+
+			static bool mav_uart_map_logged = false;
+			if (!mav_uart_map_logged) {
+				PX4_DEBUG("[MAV_UART] device=%s channel=%d",
+					 device_name ? device_name : "NULL", channel);
+				mav_uart_map_logged = true;
+			}
+
+			if (channel < 0) {
+				PX4_ERR("[MAVLINK_RX] Invalid device: %s, cannot read", device_name ? device_name : "NULL");
+				px4_usleep(timeout * 1000);
+				nread = 0;
+			} else {
+				/* Use shared UART transport wait primitive with timeout
+				 * This function will BLOCK on a semaphore instead of polling every 10ms
+				 * → Significantly reduces CPU usage (task truly sleeps when no data)
+				 */
+				int avail = rzv_uart_transport_wait_for_data((uint8_t)channel, timeout);
+
+				// Periodic MAVLink UART stats (short line to avoid log truncation)
+				static hrt_abstime last_mav_uart_log = 0;
+				static uint32_t last_rb_rx = 0;
+				static uint32_t last_rb_ovf = 0;
+				static uint32_t last_isr_writes = 0;
+				static uint32_t last_app_reads = 0;
+				static uint16_t last_drop = 0;
+
+				hrt_abstime now = hrt_absolute_time();
+				if (now - last_mav_uart_log > 5000000) {  // 5 seconds
+					uint32_t rb_rx = 0;
+					uint32_t rb_ovf = 0;
+					uint32_t isr_writes = 0;
+					uint32_t app_reads = 0;
+
+					rzv_uart_transport_get_extended_stats((uint8_t)channel,
+								      &rb_rx, &rb_ovf,
+								      &isr_writes, &app_reads);
+
+					uint32_t rb_d = (rb_rx >= last_rb_rx) ? (rb_rx - last_rb_rx) : rb_rx;
+					uint32_t ovf_d = (rb_ovf >= last_rb_ovf) ? (rb_ovf - last_rb_ovf) : rb_ovf;
+					uint32_t isr_d = (isr_writes >= last_isr_writes) ? (isr_writes - last_isr_writes) : isr_writes;
+					uint32_t rd_d = (app_reads >= last_app_reads) ? (app_reads - last_app_reads) : app_reads;
+					uint16_t drop = _status.packet_rx_drop_count;
+					uint16_t drop_d = (drop >= last_drop) ? (drop - last_drop) : drop;
+
+					PX4_DEBUG("[MAV_UART] ch=%d av=%d rb_d=%u ovf_d=%u isr_d=%u rd_d=%u drop_d=%u",
+						 channel, avail,
+						 (unsigned)rb_d, (unsigned)ovf_d,
+						 (unsigned)isr_d, (unsigned)rd_d,
+						 (unsigned)drop_d);
+
+					last_rb_rx = rb_rx;
+					last_rb_ovf = rb_ovf;
+					last_isr_writes = isr_writes;
+					last_app_reads = app_reads;
+					last_drop = drop;
+					last_mav_uart_log = now;
+				}
+
+				if (avail <= 0) {
+					/* transport wait timed out
+					 * No need for px4_usleep() here - task has properly blocked
+					 */
+					nread = 0;
+				} else {
+					if (avail > (int)sizeof(buf)) { avail = sizeof(buf); }
+					nread = rzv_uart_transport_read_fast((uint8_t)channel, buf, avail);
+
+					// Debug logging every 128 reads
+					static unsigned rx_cnt = 0;
+					if ((++rx_cnt % 128) == 0) {
+						PX4_DEBUG("[MAVLINK_RX] ch=%d, device=%s, read %d bytes (avail=%d)",
+						          channel, device_name, (int)nread, (int)avail);
+					}
+				}
+			}
+		}
+		if (nread > 0) {
+#endif  /* __PX4_FREERTOS */
 
 				/* if read failed, this loop won't execute */
 				for (ssize_t i = 0; i < nread; i++) {
@@ -3265,6 +3383,7 @@ MavlinkReceiver::run()
 					}
 				}
 
+#if !defined(__PX4_FREERTOS)
 #if defined(MAVLINK_UDP)
 			}
 
@@ -3273,6 +3392,9 @@ MavlinkReceiver::run()
 		} else if (ret == -1) {
 			usleep(10000);
 		}
+#else
+		}
+#endif  /* __PX4_FREERTOS */
 
 		const hrt_abstime t = hrt_absolute_time();
 
@@ -3489,14 +3611,41 @@ void MavlinkReceiver::start()
 	struct sched_param param;
 	(void)pthread_attr_getschedparam(&receiveloop_attr, &param);
 	param.sched_priority = SCHED_PRIORITY_MAX - 80;
+#if defined(__PX4_FREERTOS)
+	param.sched_priority = px4_board_map_priority(param.sched_priority);
+
+	if (param.sched_priority < SCHED_PRIORITY_MIN) {
+		param.sched_priority = SCHED_PRIORITY_MIN;
+
+	} else if (param.sched_priority > SCHED_PRIORITY_MAX) {
+		param.sched_priority = SCHED_PRIORITY_MAX;
+	}
+#endif /* __PX4_FREERTOS */
 	(void)pthread_attr_setschedparam(&receiveloop_attr, &param);
 
+#if defined(__PX4_FREERTOS)
+	pthread_attr_setstacksize(&receiveloop_attr, PX4_STACK_ADJUSTED(32768));
+
+	int create_result = pthread_create(&_thread, &receiveloop_attr, MavlinkReceiver::start_trampoline, (void *)this);
+
+	pthread_attr_destroy(&receiveloop_attr);
+
+	if (create_result != 0) {
+		PX4_ERR("mavlink receiver thread create failed (%d)", create_result);
+
+	} else {
+		char thread_name[16] = {};
+		(void)snprintf(thread_name, sizeof(thread_name), "mavrx_%02d", _mavlink.get_instance_id());
+		(void)pthread_setname_np(_thread, thread_name);
+	}
+#else
 	pthread_attr_setstacksize(&receiveloop_attr,
 				  PX4_STACK_ADJUSTED(sizeof(MavlinkReceiver) + 2840 + MAVLINK_RECEIVER_NET_ADDED_STACK));
 
 	pthread_create(&_thread, &receiveloop_attr, MavlinkReceiver::start_trampoline, (void *)this);
 
 	pthread_attr_destroy(&receiveloop_attr);
+#endif /* __PX4_FREERTOS */
 }
 
 void

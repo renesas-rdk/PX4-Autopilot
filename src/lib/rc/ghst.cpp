@@ -53,6 +53,11 @@
 #endif
 
 #include <drivers/drv_hrt.h>
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#include <px4_platform_common/posix.h>
+#include "uart_rc_switch.h"
+#endif /* __PX4_FREERTOS */
 #include <termios.h>
 #include <string.h>
 #include <unistd.h>
@@ -95,6 +100,19 @@ static bool ghst_parse_buffer(uint16_t *values, ghstLinkStatistics_t *link_stats
 
 int ghst_config(int uart_fd)
 {
+#if defined(__PX4_FREERTOS)
+    (void)uart_fd;
+	uart_set_rc_serial_mode(true);
+
+	if (uart_reopen_rc_channel(GHST_BAUDRATE) != 0) {
+		errno = EIO;
+		return -1;
+	}
+
+	uart_rc_buffer_flush(0);
+	errno = 0;
+	return 0;
+#else
 	struct termios t;
 	int ret_val;
 
@@ -105,6 +123,7 @@ int ghst_config(int uart_fd)
 	memset(prev_rc_vals, static_cast<int>(UINT16_MAX), sizeof(uint16_t) * GHST_MAX_NUM_CHANNELS);
 	ret_val = tcsetattr(uart_fd, TCSANOW, &t);
 	return ret_val;
+#endif /* __PX4_FREERTOS */
 }
 
 /**

@@ -51,11 +51,14 @@ add_library(px4_platform STATIC
 	px4_cli.cpp
 	shutdown.cpp
 	spi.cpp
+	load_mon_platform.cpp
 	pab_manifest.c
 	Serial.cpp
+	px4_board_priority_map.cpp
 	${SRCS}
 )
 target_link_libraries(px4_platform prebuild_targets px4_work_queue)
+px4_register_archive(px4_platform)
 
 if(NOT "${PX4_BOARD}" MATCHES "io-v2")
 	add_subdirectory(uORB)

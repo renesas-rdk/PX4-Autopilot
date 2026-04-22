@@ -37,6 +37,11 @@
 #include <uORB/topics/vehicle_command_ack.h>
 
 #include <termios.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/posix.h>
+#include <errno.h>
+#include "rzv_fsp/uart_rc_ringbuffer.h"
+#endif /* __PX4_FREERTOS */
 
 using namespace time_literals;
 
@@ -86,10 +91,15 @@ RCInput::init()
 	RF_RADIO_POWER_CONTROL(true);
 #endif // RF_RADIO_POWER_CONTROL
 
+#if defined(__PX4_FREERTOS)
+	const bool singlewire = board_rc_singlewire(_device);
+	// sbus_init opens the RC UART and applies the default SBUS configuration
+	_rcs_fd = sbus_init(_device, singlewire);
+#else
 	// dsm_init sets some file static variables and returns a file descriptor
 	// it also powers on the radio if needed
 	_rcs_fd = dsm_init(_device);
-
+#endif /* __PX4_FREERTOS */
 	if (_rcs_fd < 0) {
 		return -errno;
 	}
@@ -103,7 +113,11 @@ RCInput::init()
 	// assume SBUS input and immediately switch it to
 	// so that if Single wire mode on TX there will be only
 	// a short contention
+#if defined(__PX4_FREERTOS)
+	sbus_config(_rcs_fd, singlewire);
+#else
 	sbus_config(_rcs_fd, board_rc_singlewire(_device));
+#endif /* __PX4_FREERTOS */
 
 #ifdef GPIO_PPM_IN
 	// disable CPPM input by mapping it away from the timer capture input
@@ -937,6 +951,9 @@ int RCInput::print_status()
 	if (_device[0] != '\0') {
 		PX4_INFO("UART device: %s", _device);
 		PX4_INFO("UART RX bytes: %"  PRIu32, _bytes_rx);
+#if defined(__PX4_FREERTOS)
+		uart_rc_buffer_debug_state(1);
+#endif /* __PX4_FREERTOS */
 	}
 
 	PX4_INFO("RC state: %s: %s", _rc_scan_locked ? "found" : "searching for signal", RC_SCAN_STRING[_rc_scan_state]);

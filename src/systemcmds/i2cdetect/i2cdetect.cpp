@@ -44,15 +44,93 @@
 #include <px4_platform_common/getopt.h>
 
 #include <stdlib.h>
+#if defined(__PX4_FREERTOS)
+#include <fcntl.h>
+#include <posix_compat/i2c-dev.h>
+#endif /* __PX4_FREERTOS */
 
 namespace i2cdetect
 {
+#if defined(__PX4_FREERTOS)
+static constexpr uint8_t I2C_ADDR_MIN = 0x03;
+static constexpr uint8_t I2C_ADDR_MAX = 0x77;
+
+static inline bool address_in_probe_range(uint8_t addr)
+{
+	return (addr >= I2C_ADDR_MIN) && (addr <= I2C_ADDR_MAX);
+}
+#endif /* __PX4_FREERTOS */
 
 int detect(int bus)
 {
 	printf("Scanning I2C bus: %d\n", bus);
 
 	int ret = PX4_ERROR;
+
+#if defined(__PX4_FREERTOS)
+	char devpath[24] {};
+	(void)snprintf(devpath, sizeof(devpath), "/dev/i2c-%d", bus);
+
+	int i2c_fd = ::open(devpath, O_RDWR);
+
+	if (i2c_fd < 0) {
+		PX4_ERR("open %s failed (%d)", devpath, errno);
+		return PX4_ERROR;
+	}
+
+	bool found[128] {};
+
+	for (int addr = 0; addr < 128; addr++) {
+		if (!address_in_probe_range(static_cast<uint8_t>(addr))) {
+			continue;
+		}
+
+		uint8_t dummy = 0;
+		i2c_msg probe_msg {};
+		probe_msg.addr  = static_cast<uint16_t>(addr);
+		probe_msg.flags = 0;           /* WRITE direction */
+		probe_msg.buf   = &dummy;
+		probe_msg.len   = 0;           /* 0 bytes: address-only probe, no data phase */
+
+		i2c_rdwr_ioctl_data data {};
+		data.msgs  = &probe_msg;
+		data.nmsgs = 1;
+
+		if (::ioctl(i2c_fd, I2C_RDWR, reinterpret_cast<unsigned long>(&data)) >= 0) {
+			found[addr] = true;
+			ret = PX4_OK;
+		}
+
+		usleep(500);
+	}
+
+	usleep(150000);
+
+	printf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
+
+	for (int i = 0; i < 128; i += 16) {
+		printf("%02x: ", i);
+
+		for (int j = 0; j < 16; j++) {
+			const int addr = i + j;
+
+			if (!address_in_probe_range(static_cast<uint8_t>(addr))) {
+				printf("   ");
+
+			} else if (found[addr]) {
+				printf("%02x ", addr);
+
+			} else {
+				printf("-- ");
+			}
+		}
+
+		printf("\n");
+	}
+
+	::close(i2c_fd);
+	return ret;
+#else
 
 	// attach to the i2c bus
 	struct i2c_master_s *i2c_dev = px4_i2cbus_initialize(bus);
@@ -128,6 +206,7 @@ int detect(int bus)
 	px4_i2cbus_uninitialize(i2c_dev);
 
 	return ret;
+#endif /* __PX4_FREERTOS */
 }
 
 int usage(const char *reason = nullptr)
@@ -139,7 +218,11 @@ int usage(const char *reason = nullptr)
 	PRINT_MODULE_DESCRIPTION("Utility to scan for I2C devices on a particular bus.");
 
 	PRINT_MODULE_USAGE_NAME_SIMPLE("i2cdetect", "command");
+#if defined(__PX4_FREERTOS)
+	PRINT_MODULE_USAGE_PARAM_INT('b', 7, 7, 7, "I2C bus", true);
+#else
 	PRINT_MODULE_USAGE_PARAM_INT('b', 1, 4, 1, "I2C bus", true);
+#endif /* __PX4_FREERTOS */
 
 	return PX4_OK;
 }
@@ -152,7 +235,11 @@ extern "C" {
 
 int i2cdetect_main(int argc, char *argv[])
 {
+#if defined(__PX4_FREERTOS)
+	int i2c_bus = 7;
+#else
 	int i2c_bus = 1;
+#endif /* __PX4_FREERTOS */
 
 	int myoptind = 1;
 	int ch = 0;

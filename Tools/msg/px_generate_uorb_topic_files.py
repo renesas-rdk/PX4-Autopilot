@@ -183,8 +183,14 @@ def generate_by_template(output_file, template_file, em_globals):
 
     ofile = open(output_file, 'w')
     # todo, reuse interpreter
-    interpreter = em.Interpreter(output=ofile, globals=em_globals, options={
-                                 em.RAW_OPT: True, em.BUFFERED_OPT: True})
+    interpreter_kwargs = {"output": ofile, "globals": em_globals}
+    # Newer empy versions removed RAW_OPT/BUFFERED_OPT; keep compatibility.
+    if hasattr(em, "RAW_OPT") and hasattr(em, "BUFFERED_OPT"):
+        interpreter_kwargs["options"] = {
+            em.RAW_OPT: True,
+            em.BUFFERED_OPT: True,
+        }
+    interpreter = em.Interpreter(**interpreter_kwargs)
     try:
         interpreter.file(open(template_file))
     except OSError as e:

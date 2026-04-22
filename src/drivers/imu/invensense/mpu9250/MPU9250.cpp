@@ -105,6 +105,9 @@ bool MPU9250::Reset()
 	_state = STATE::RESET;
 	DataReadyInterruptDisable();
 	ScheduleClear();
+#if defined(__PX4_FREERTOS)
+	_fifo_last_timestamp_sample = 0;
+#endif /* __PX4_FREERTOS */
 	ScheduleNow();
 	return true;
 }
@@ -269,8 +272,14 @@ void MPU9250::RunImpl()
 			if (_data_ready_interrupt_enabled) {
 				// scheduled from interrupt if _drdy_timestamp_sample was set as expected
 				const hrt_abstime drdy_timestamp_sample = _drdy_timestamp_sample.fetch_and(0);
+#if defined(__PX4_FREERTOS)
+
+				if (drdy_timestamp_sample != 0
+				    && (now - drdy_timestamp_sample) < static_cast<hrt_abstime>(_fifo_empty_interval_us) * 2u) {
+#else
 
 				if ((now - drdy_timestamp_sample) < _fifo_empty_interval_us) {
+#endif /* __PX4_FREERTOS */
 					timestamp_sample = drdy_timestamp_sample;
 
 				} else {
@@ -298,7 +307,17 @@ void MPU9250::RunImpl()
 
 				// tolerate minor jitter, leave sample to next iteration if behind by only 1
 				if (samples == _fifo_gyro_samples + 1) {
+#if defined(__PX4_FREERTOS)
+					timestamp_sample -= static_cast<int>(_fifo_sample_dt_us);
+
+					// Ensure monotonicity: jitter subtraction must not produce a backward timestamp
+					if (_fifo_last_timestamp_sample > 0 && timestamp_sample <= _fifo_last_timestamp_sample) {
+						timestamp_sample = _fifo_last_timestamp_sample + 1;
+					}
+
+#else
 					timestamp_sample -= static_cast<int>(FIFO_SAMPLE_DT);
+#endif /* __PX4_FREERTOS */
 					samples--;
 				}
 
@@ -310,6 +329,9 @@ void MPU9250::RunImpl()
 				} else if (samples >= SAMPLES_PER_TRANSFER) {
 					if (FIFORead(timestamp_sample, samples)) {
 						success = true;
+#if defined(__PX4_FREERTOS)
+						_fifo_last_timestamp_sample = timestamp_sample;
+#endif /* __PX4_FREERTOS */
 
 						if (_failure_count > 0) {
 							_failure_count--;
@@ -410,6 +432,13 @@ void MPU9250::ConfigureGyro()
 
 void MPU9250::ConfigureSampleRate(int sample_rate)
 {
+#if defined(__PX4_FREERTOS)
+	// Keep the FreeRTOS variant ultra predictable: fixed sample dt and FIFO depth.
+	_smplrt_div = 0; // no additional divider
+	_fifo_sample_dt_us = FIFO_SAMPLE_DT;
+	_fifo_gyro_samples = SAMPLES_PER_TRANSFER;
+	_fifo_empty_interval_us = static_cast<uint16_t>(_fifo_gyro_samples * _fifo_sample_dt_us);
+#else
 	// round down to nearest FIFO sample dt * SAMPLES_PER_TRANSFER
 	const float min_interval = FIFO_SAMPLE_DT * SAMPLES_PER_TRANSFER;
 	_fifo_empty_interval_us = math::max(roundf((1e6f / (float)sample_rate) / min_interval) * min_interval, min_interval);
@@ -418,6 +447,7 @@ void MPU9250::ConfigureSampleRate(int sample_rate)
 
 	// recompute FIFO empty interval (us) with actual gyro sample limit
 	_fifo_empty_interval_us = _fifo_gyro_samples * (1e6f / GYRO_RATE);
+#endif /* __PX4_FREERTOS */
 }
 
 bool MPU9250::Configure()
@@ -438,6 +468,10 @@ bool MPU9250::Configure()
 
 	ConfigureAccel();
 	ConfigureGyro();
+#if defined(__PX4_FREERTOS)
+	// ensures the current software value and the device register stay in sync
+	RegisterWrite(Register::SMPLRT_DIV, _smplrt_div);
+#endif /* __PX4_FREERTOS */
 
 	return success;
 }
@@ -448,14 +482,32 @@ int MPU9250::DataReadyInterruptCallback(int irq, void *context, void *arg)
 	return 0;
 }
 
+#if defined(__PX4_FREERTOS)
+// Pop one ISR timestamp per DataReady() call (FIFO order, one per ISR pulse).
+extern "C" uint64_t rzv_sensor_hal_pop_drdy_timestamp(uint32_t pinset);
+#endif /* __PX4_FREERTOS */
+
 void MPU9250::DataReady()
 {
+#if defined(__PX4_FREERTOS)
+	uint64_t ts = rzv_sensor_hal_pop_drdy_timestamp(_drdy_gpio);
+
+	if (++_drdy_count >= _fifo_gyro_samples) {
+		if (ts == 0) {
+			ts = hrt_absolute_time();
+		}
+		_drdy_timestamp_sample.store(ts);
+		_drdy_count -= _fifo_gyro_samples;
+		ScheduleNow();
+	}
+#else
 	// at least the required number of samples in the FIFO
 	if (++_drdy_count >= _fifo_gyro_samples) {
 		_drdy_timestamp_sample.store(hrt_absolute_time());
 		_drdy_count -= _fifo_gyro_samples;
 		ScheduleNow();
 	}
+#endif /* __PX4_FREERTOS */
 }
 
 bool MPU9250::DataReadyInterruptConfigure()
@@ -500,7 +552,12 @@ uint8_t MPU9250::RegisterRead(Register reg)
 {
 	uint8_t cmd[2] {};
 	cmd[0] = static_cast<uint8_t>(reg) | DIR_READ;
+#if defined(__PX4_FREERTOS)
+	/* Keep one SPI bitrate on FreeRTOS to avoid backend reopen jitter. */
+	set_frequency(SPI_SPEED_SENSOR);
+#else
 	set_frequency(SPI_SPEED); // low speed for regular registers
+#endif /* __PX4_FREERTOS */
 	transfer(cmd, cmd, sizeof(cmd));
 	return cmd[1];
 }
@@ -508,7 +565,12 @@ uint8_t MPU9250::RegisterRead(Register reg)
 void MPU9250::RegisterWrite(Register reg, uint8_t value)
 {
 	uint8_t cmd[2] { (uint8_t)reg, value };
+#if defined(__PX4_FREERTOS)
+	/* Keep one SPI bitrate on FreeRTOS to avoid backend reopen jitter. */
+	set_frequency(SPI_SPEED_SENSOR);
+#else
 	set_frequency(SPI_SPEED); // low speed for regular registers
+#endif /* __PX4_FREERTOS */
 	transfer(cmd, cmd, sizeof(cmd));
 }
 
@@ -546,6 +608,9 @@ static bool fifo_accel_equal(const FIFO::DATA &f0, const FIFO::DATA &f1)
 bool MPU9250::FIFORead(const hrt_abstime &timestamp_sample, uint8_t samples)
 {
 	FIFOTransferBuffer buffer{};
+#if defined(__PX4_FREERTOS)
+	buffer.cmd = static_cast<uint8_t>(Register::FIFO_R_W) | DIR_READ;
+#endif /* __PX4_FREERTOS */
 	const size_t transfer_size = math::min(samples * sizeof(FIFO::DATA) + 1, FIFO::SIZE);
 	set_frequency(SPI_SPEED_SENSOR);
 
@@ -556,7 +621,11 @@ bool MPU9250::FIFORead(const hrt_abstime &timestamp_sample, uint8_t samples)
 
 	uint8_t first_sample = 0;
 
+#if defined(__PX4_FREERTOS)
+	if ((SAMPLES_PER_TRANSFER == 2) && (samples >= 4)) {
+#else
 	if (samples >= 4) {
+#endif /* __PX4_FREERTOS */
 		if (fifo_accel_equal(buffer.f[0], buffer.f[1]) && fifo_accel_equal(buffer.f[2], buffer.f[3])) {
 			// [A0, A1, A2, A3]
 			//  A0==A1, A2==A3
@@ -574,7 +643,11 @@ bool MPU9250::FIFORead(const hrt_abstime &timestamp_sample, uint8_t samples)
 			first_sample = 2;
 			samples -= 2; // skip first 2 samples
 
+#if defined(__PX4_FREERTOS)
+		} else if (SAMPLES_PER_TRANSFER == 2) {
+#else
 		} else {
+#endif /* __PX4_FREERTOS */
 			// no matching accel samples is an error
 			if (!_slave_ak8963_magnetometer) {
 				// if the slave I2C magnetometer is active we tolerate these missing samples, but only if intermittant
@@ -613,14 +686,28 @@ void MPU9250::FIFOReset()
 			RegisterSetAndClearBits(r.reg, r.set_bits, r.clear_bits);
 		}
 	}
+#if defined(__PX4_FREERTOS)
+	_have_valid_accel_sample = false;
+	_have_valid_gyro_sample = false;
+	_accel_reject_streak = 0;
+	_gyro_reject_streak = 0;
+#endif /* __PX4_FREERTOS */
 }
 
 void MPU9250::ProcessAccel(const hrt_abstime &timestamp_sample, const FIFO::DATA fifo[], const uint8_t samples)
 {
 	sensor_accel_fifo_s accel{};
 	accel.timestamp_sample = timestamp_sample;
+#if defined(__PX4_FREERTOS)
+	accel.dt = _fifo_sample_dt_us * SAMPLES_PER_TRANSFER;
+	if (!PX4_ISFINITE(accel.dt) || (accel.dt <= 0.f)) {
+		accel.dt = FIFO_SAMPLE_DT;
+	}
+	uint8_t valid_samples = 0;
+#else
 	accel.samples = 0;
 	accel.dt = FIFO_SAMPLE_DT * SAMPLES_PER_TRANSFER;
+#endif /* __PX4_FREERTOS */
 
 	for (int i = 0; i < samples; i = i + SAMPLES_PER_TRANSFER) {
 		int16_t accel_x = combine(fifo[i].ACCEL_XOUT_H, fifo[i].ACCEL_XOUT_L);
@@ -629,11 +716,65 @@ void MPU9250::ProcessAccel(const hrt_abstime &timestamp_sample, const FIFO::DATA
 
 		// sensor's frame is +x forward, +y left, +z up
 		//  flip y & z to publish right handed with z down (x forward, y right, z down)
+#if defined(__PX4_FREERTOS)
+		int16_t accel_sample_x = accel_x;
+		int16_t accel_sample_y = (accel_y == INT16_MIN) ? INT16_MAX : -accel_y;
+		int16_t accel_sample_z = (accel_z == INT16_MIN) ? INT16_MAX : -accel_z;
+
+		bool reject_sample = false;
+
+		if (_have_valid_accel_sample) {
+			const int32_t dx = static_cast<int32_t>(accel_sample_x) - static_cast<int32_t>(_last_valid_accel_raw[0]);
+			const int32_t dy = static_cast<int32_t>(accel_sample_y) - static_cast<int32_t>(_last_valid_accel_raw[1]);
+			const int32_t dz = static_cast<int32_t>(accel_sample_z) - static_cast<int32_t>(_last_valid_accel_raw[2]);
+
+			if ((dx > ACCEL_SPIKE_LIMIT) || (dx < -ACCEL_SPIKE_LIMIT)
+			    || (dy > ACCEL_SPIKE_LIMIT) || (dy < -ACCEL_SPIKE_LIMIT)
+			    || (dz > ACCEL_SPIKE_LIMIT) || (dz < -ACCEL_SPIKE_LIMIT)) {
+				reject_sample = true;
+
+				const uint32_t reject_idx = ++_accel_reject_count;
+
+				if ((reject_idx <= 3u) || ((reject_idx % 100u) == 0u)) {
+					PX4_DEBUG("[MPU9250] accel spike rejected Δ[%d %d %d]",
+						   static_cast<int>(dx), static_cast<int>(dy), static_cast<int>(dz));
+				}
+			}
+		}
+
+		if (reject_sample) {
+			_accel_reject_streak++;
+
+			if (_accel_reject_streak >= SPIKE_REJECT_RECOVERY_LIMIT) {
+				PX4_WARN("MPU9250 accel spike filter reset after %u rejects",
+					 static_cast<unsigned>(_accel_reject_streak));
+				_have_valid_accel_sample = false;
+				_accel_reject_streak = 0;
+			}
+
+			continue;
+		}
+
+		_last_valid_accel_raw[0] = accel_sample_x;
+		_last_valid_accel_raw[1] = accel_sample_y;
+		_last_valid_accel_raw[2] = accel_sample_z;
+		_have_valid_accel_sample = true;
+		_accel_reject_streak = 0;
+
+		accel.x[valid_samples] = accel_sample_x;
+		accel.y[valid_samples] = accel_sample_y;
+		accel.z[valid_samples] = accel_sample_z;
+		valid_samples++;
+	}
+
+	accel.samples = valid_samples;
+#else
 		accel.x[accel.samples] = accel_x;
 		accel.y[accel.samples] = (accel_y == INT16_MIN) ? INT16_MAX : -accel_y;
 		accel.z[accel.samples] = (accel_z == INT16_MIN) ? INT16_MAX : -accel_z;
 		accel.samples++;
 	}
+#endif /* __PX4_FREERTOS */
 
 	_px4_accel.set_error_count(perf_event_count(_bad_register_perf) + perf_event_count(_bad_transfer_perf) +
 				   perf_event_count(_fifo_empty_perf) + perf_event_count(_fifo_overflow_perf));
@@ -647,8 +788,16 @@ void MPU9250::ProcessGyro(const hrt_abstime &timestamp_sample, const FIFO::DATA 
 {
 	sensor_gyro_fifo_s gyro{};
 	gyro.timestamp_sample = timestamp_sample;
+#if defined(__PX4_FREERTOS)
+	gyro.dt = _fifo_sample_dt_us;
+	if (!PX4_ISFINITE(gyro.dt) || (gyro.dt <= 0.f)) {
+		gyro.dt = FIFO_SAMPLE_DT;
+	}
+	uint8_t valid_samples = 0;
+#else
 	gyro.samples = samples;
 	gyro.dt = FIFO_SAMPLE_DT;
+#endif /* __PX4_FREERTOS */
 
 	for (int i = 0; i < samples; i++) {
 		const int16_t gyro_x = combine(fifo[i].GYRO_XOUT_H, fifo[i].GYRO_XOUT_L);
@@ -657,15 +806,75 @@ void MPU9250::ProcessGyro(const hrt_abstime &timestamp_sample, const FIFO::DATA 
 
 		// sensor's frame is +x forward, +y left, +z up
 		//  flip y & z to publish right handed with z down (x forward, y right, z down)
+#if defined(__PX4_FREERTOS)
+		int16_t gyro_sample_x = gyro_x;
+		int16_t gyro_sample_y = (gyro_y == INT16_MIN) ? INT16_MAX : -gyro_y;
+		int16_t gyro_sample_z = (gyro_z == INT16_MIN) ? INT16_MAX : -gyro_z;
+
+		bool reject_sample = false;
+
+		if (_have_valid_gyro_sample) {
+			const int32_t dx = static_cast<int32_t>(gyro_sample_x) - static_cast<int32_t>(_last_valid_gyro_raw[0]);
+			const int32_t dy = static_cast<int32_t>(gyro_sample_y) - static_cast<int32_t>(_last_valid_gyro_raw[1]);
+			const int32_t dz = static_cast<int32_t>(gyro_sample_z) - static_cast<int32_t>(_last_valid_gyro_raw[2]);
+
+			if ((dx > GYRO_SPIKE_LIMIT) || (dx < -GYRO_SPIKE_LIMIT)
+			    || (dy > GYRO_SPIKE_LIMIT) || (dy < -GYRO_SPIKE_LIMIT)
+			    || (dz > GYRO_SPIKE_LIMIT) || (dz < -GYRO_SPIKE_LIMIT)) {
+				reject_sample = true;
+
+				const uint32_t reject_idx = ++_gyro_reject_count;
+
+				if ((reject_idx <= 3u) || ((reject_idx % 100u) == 0u)) {
+					PX4_DEBUG("[MPU9250] gyro spike rejected Δ[%d %d %d]",
+						   static_cast<int>(dx), static_cast<int>(dy), static_cast<int>(dz));
+				}
+			}
+		}
+
+		if (reject_sample) {
+			_gyro_reject_streak++;
+
+			if (_gyro_reject_streak >= SPIKE_REJECT_RECOVERY_LIMIT) {
+				PX4_WARN("MPU9250 gyro spike filter reset after %u rejects",
+					 static_cast<unsigned>(_gyro_reject_streak));
+				_have_valid_gyro_sample = false;
+				_gyro_reject_streak = 0;
+			}
+
+			continue;
+		}
+
+		_last_valid_gyro_raw[0] = gyro_sample_x;
+		_last_valid_gyro_raw[1] = gyro_sample_y;
+		_last_valid_gyro_raw[2] = gyro_sample_z;
+		_have_valid_gyro_sample = true;
+		_gyro_reject_streak = 0;
+
+		gyro.x[valid_samples] = gyro_sample_x;
+		gyro.y[valid_samples] = gyro_sample_y;
+		gyro.z[valid_samples] = gyro_sample_z;
+		valid_samples++;
+	}
+
+	gyro.samples = valid_samples;
+#else
 		gyro.x[i] = gyro_x;
 		gyro.y[i] = (gyro_y == INT16_MIN) ? INT16_MAX : -gyro_y;
 		gyro.z[i] = (gyro_z == INT16_MIN) ? INT16_MAX : -gyro_z;
 	}
+#endif /* __PX4_FREERTOS */
 
 	_px4_gyro.set_error_count(perf_event_count(_bad_register_perf) + perf_event_count(_bad_transfer_perf) +
 				  perf_event_count(_fifo_empty_perf) + perf_event_count(_fifo_overflow_perf));
 
+#if defined(__PX4_FREERTOS)
+	if (gyro.samples > 0) {
+		_px4_gyro.updateFIFO(gyro);
+	}
+#else
 	_px4_gyro.updateFIFO(gyro);
+#endif /* __PX4_FREERTOS */
 }
 
 void MPU9250::UpdateTemperature()

@@ -1,0 +1,94 @@
+# Copyright (c) 2025 Renesas Electronics Corporation and/or its affiliates
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# rcS — RZ/V2H S500 Drone mandatory module starts
+
+dataman start -r
+load_mon start
+tone_alarm start
+safety_button start
+rc_input start -d /dev/ttyS6
+rc_update start
+? sleep 1
+
+# Bring up sensors in legacy order with delays
+bmp280 -I -b 7 -a 0x76 start
+? sleep 1
+mpu9250 -s -M -b 0 -R 0 start
+# mpu9250 -s -b 0 -R 0 start
+? sleep 1
+sensors start
+? sleep 1
+
+# Power Module PM03D (Digital I2C) startup on bus 7 (same as BMP280).
+# PM03D uses INA228 chip (not INA226). ina226 probe at 0x41 will always NACK on PM03D — silence it.
+# ina228 probes at 0x45 (default INA228 address, A0=A1=GND). No ? so we see real errors if it fails.
+# ? ina226 -I -b 7 start
+ina228 -I -b 7 start
+? sleep 1
+# Start gyro_fft for vibration analysis
+gyro_fft start
+# GPS M10 on UART9
+gps start -d /dev/ttyS9 -b 115200
+? sleep 1
+# IST8310 external mag from GPS M10 companion, on I2C bus 7 (shared with BMP280/INA228).
+# Use ? so boot continues if I2C lines not yet connected or device absent.
+# ? ist8310 -I -b 7 start
+# ? sleep 1
+# Holybro M10 status RGB LED (IS31FL3195) on GPS companion I2C bus 7.
+# ? rgbled_is31fl3195 -I -b 7 -a 0x54 start
+# ? sleep 1
+tfmini start -d /dev/ttyS4
+? sleep 1
+land_detector start multicopter
+
+linux_pwm_out start
+
+ekf2 start
+? sleep 1
+navigator start
+# ? sleep 1
+# gyro_calibration: DISABLED — moved to extras.txt on SD card.
+# DANGER: without TC_G0_* thermal cal table, causes Z-axis offset +0.865 rad/s (~51°/s) → yaw spin.
+# Uncomment in /drone-data/cr8_data/etc/extras.txt ONLY after installing TC_G0_* params.
+# gyro_calibration start
+# ? sleep 1
+# MAG bias estimator is now part of the default sensor stack.
+mag_bias_estimator start
+mc_hover_thrust_estimator start
+flight_mode_manager start
+mc_pos_control start
+mc_att_control start
+mc_rate_control start
+mc_autotune_attitude_control start
+control_allocator start
+# Start logger in default mode (SDLOG_MODE controls arm/disarm behavior), -t=timestamp in filename, -b=64KB buffer
+logger start -t -b 64
+? sleep 1
+
+manual_control start
+commander start
+? sleep 1
+# SiK Telemetry v3 serial port: 115200 baud = 11520 B/s max.
+# -r 4000: conservative limit well below 11520 B/s to prevent TX FIFO overflow on initial
+# connect (QGC triggers param list dump ~30KB; without throttling this saturates the link
+# and corrupts MAVLink frames → immediate QGC disconnect).
+# Log downloads work within this limit (mavlink ftp uses chunked transfers).
+mavlink start -d /dev/ttyS5 -b 115200 -r 4000 -x
+
+# Configure streams immediately (no sleep) so QGC sees telemetry on first connect.
+# Default upstream streams at 50Hz+ would exceed SiK bandwidth before these overrides apply.
+mavlink stream -d /dev/ttyS5 -s ATTITUDE -r 10
+mavlink stream -d /dev/ttyS5 -s LOCAL_POSITION_NED -r 5
+mavlink stream -d /dev/ttyS5 -s BATTERY_STATUS -r 1
+mavlink stream -d /dev/ttyS5 -s SYS_STATUS -r 1
+mavlink stream -d /dev/ttyS5 -s VFR_HUD -r 4
+
+# Optional: Manual control feedback (for debugging)
+mavlink stream -d /dev/ttyS5 -s MANUAL_CONTROL -r 5
+mavlink stream -d /dev/ttyS5 -s STATUSTEXT -r 2
+? sleep 1
+mavlink boot_complete
+
+# uxrce_dds_client start -t custom

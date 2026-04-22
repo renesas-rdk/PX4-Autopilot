@@ -147,6 +147,15 @@ public:
 		return (pthread_t)0;
 	}
 
+#if defined(__PX4_FREERTOS)
+	/** Return the OS file descriptor of the open log file (-1 if not open). */
+	int get_log_fd(LogType type) const
+	{
+		if (_log_writer_file) { return _log_writer_file->get_log_fd(type); }
+
+		return -1;
+	}
+#endif /* __PX4_FREERTOS */
 
 	/**
 	 * Indicate to the underlying backend whether future write_message() calls need a reliable

@@ -1,0 +1,78 @@
+############################################################################
+# Copyright (c) 2025 Renesas Electronics Corporation and/or its affiliates
+#
+# SPDX-License-Identifier: BSD-3-Clause
+############################################################################
+
+add_library(drivers_rzv_fsp STATIC
+    rzv_fsp/spi_fsp_backend.c
+    rzv_fsp/i2c_fsp_backend.c
+    rzv_fsp/uart_fsp_backend.c
+    rzv_fsp/uart_openamp_backend.c
+    rzv_fsp/uart_rc_ringbuffer.c
+    rzv_fsp/uart_channel_map.c
+    rzv_fsp/uart_transport.cpp
+    rzv_fsp/rzv_dma_buffer.c
+    rzv_fsp/rzv_hrt.cpp
+    rzv_fsp/rzv_spi_cdev.cpp
+    rzv_fsp/rzv_i2c_cdev.cpp
+    rzv_fsp/rzv_uart_cdev.cpp
+    rzv_fsp/rzv_device_registry.cpp
+)
+
+target_include_directories(drivers_rzv_fsp
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/rzv_fsp/include
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/px4/src
+        ${CMAKE_SOURCE_DIR}/px4/src/include
+        ${CMAKE_SOURCE_DIR}/px4/src/lib
+        ${CMAKE_SOURCE_DIR}/px4/platforms
+        ${CMAKE_SOURCE_DIR}/px4/platforms/common/include
+        ${CMAKE_SOURCE_DIR}/px4/platforms/posix/include
+        ${CMAKE_SOURCE_DIR}/px4/platforms/posix/src/px4/common
+        ${CMAKE_SOURCE_DIR}/px4/platforms/posix/src/px4/common/include
+        ${CMAKE_SOURCE_DIR}/px4/platforms/posix/src/px4/generic/generic/include
+        ${CMAKE_SOURCE_DIR}/px4/boards/renesas/rzv/src
+        ${CMAKE_SOURCE_DIR}/px4/boards/renesas/rzv/src/board
+        ${CMAKE_SOURCE_DIR}/px4/boards/renesas/rzv/src/hal
+        ${CMAKE_SOURCE_DIR}/px4/boards/renesas/rzv/src/services
+        ${CMAKE_SOURCE_DIR}/px4/boards/renesas/rzv/src/shim
+        ${CMAKE_SOURCE_DIR}/px4/boards/renesas/rzv/src/shim/px4
+        ${CMAKE_SOURCE_DIR}/px4/boards/renesas/rzv/src/shim/freertos
+        ${PX4_BUILD_DIR}
+        ${PX4_BUILD_DIR}/src
+        ${PX4_BUILD_DIR}/generated_params
+        ${PX4_BUILD_DIR}/src/lib/parameters
+        ${CMAKE_SOURCE_DIR}/rzv/fsp/src/rm_freertos_port
+        ${CMAKE_SOURCE_DIR}/rzv/fsp/src/rm_freertos_port/cr
+        ${CMAKE_SOURCE_DIR}/rzv/fsp/src/bsp/mcu/rzv2h
+        ${CMAKE_SOURCE_DIR}/rzv/fsp/inc
+        ${CMAKE_SOURCE_DIR}/rzv/fsp/inc/api
+        ${CMAKE_SOURCE_DIR}/rzv/fsp/inc/instances
+        ${CMAKE_SOURCE_DIR}/rzv_cfg/aws
+        ${CMAKE_SOURCE_DIR}/rzv_cfg/fsp_cfg
+        ${CMAKE_SOURCE_DIR}/rzv_cfg/fsp_cfg/bsp
+        ${CMAKE_SOURCE_DIR}/rzv_gen
+        ${CMAKE_SOURCE_DIR}/rzv/aws/FreeRTOS/FreeRTOS/Source/include
+        ${CMAKE_SOURCE_DIR}/rzv/aws/FreeRTOS/FreeRTOS-Plus/Source/FreeRTOS-Plus-Common/include
+        ${CMAKE_SOURCE_DIR}/src/freertos_posix/include
+        ${CMAKE_SOURCE_DIR}/src/freertos_posix/include/portable
+        ${CMAKE_SOURCE_DIR}/src/freertos_posix/include/FreeRTOS_POSIX
+        ${CMAKE_SOURCE_DIR}/src/freertos_posix/include/private
+        ${CMAKE_SOURCE_DIR}/src/freertos_posix/portable/include
+        ${CMAKE_SOURCE_DIR}/src/freertos_posix/portable
+        ${CMAKE_SOURCE_DIR}/rzv/linaro/open-amp/lib/include
+        ${CMAKE_SOURCE_DIR}/rzv/linaro/libmetal/include
+)
+
+target_compile_definitions(drivers_rzv_fsp
+    PUBLIC
+        __PX4_FREERTOS=1
+        __PX4_POSIX=1
+        _RENESAS_RZV_
+        _RZV_CORE=CR8_0
+        _RZV_ORDINAL=2
+        CONFIG_ORB_COMMUNICATOR
+        RZV_MAVLINK_USE_OPENAMP=$<BOOL:${RZV_MAVLINK_USE_OPENAMP}>
+)

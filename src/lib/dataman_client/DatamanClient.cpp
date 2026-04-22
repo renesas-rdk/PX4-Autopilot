@@ -92,44 +92,113 @@ bool DatamanClient::syncHandler(const dataman_request_s &request, dataman_respon
 	perf_begin(_sync_perf);
 	_dataman_request_pub.publish(request);
 
+#if defined(__PX4_FREERTOS)
+	bool use_poll = true;
+
+#endif /* __PX4_FREERTOS */
 	while (!response_received && (time_elapsed < timeout)) {
 
 		uint32_t timeout_ms = 100;
+#if !defined(__PX4_FREERTOS)
 		ret = px4_poll(&_fds, 1, timeout_ms);
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+		if (use_poll) {
+			ret = px4_poll(&_fds, 1, timeout_ms);
+#else
 		if (ret < 0) {
 			PX4_ERR("px4_poll returned error: %" PRIu32, ret);
 			break;
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+			if (ret < 0) {
+				if (errno == ENOTSUP) {
+					use_poll = false;
+					continue;
+#else
 		} else if (ret == 0) {
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+				} else {
+					PX4_ERR("px4_poll returned error: %" PRIu32, ret);
+					break;
+				}
+
+			} else if (ret == 0) {
+
+				// No response received, send new request
+				_dataman_request_pub.publish(request);
+				continue;
+			}
+#else
 			// No response received, send new request
 			_dataman_request_pub.publish(request);
+#endif /* __PX4_FREERTOS */
 
 		} else {
+#if defined(__PX4_FREERTOS)
+			px4_usleep(timeout_ms * 1000);
+			ret = 1;
+		}
 
+		bool updated = false;
+		orb_check(_dataman_response_sub, &updated);
+#else
 			bool updated = false;
 			orb_check(_dataman_response_sub, &updated);
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+		if (updated) {
+			orb_copy(ORB_ID(dataman_response), _dataman_response_sub, &response);
+#else
 			if (updated) {
 				orb_copy(ORB_ID(dataman_response), _dataman_response_sub, &response);
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+			if (response.client_id == request.client_id) {
+#else
 				if (response.client_id == request.client_id) {
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+				if ((response.request_type == request.request_type) &&
+				    (response.item == request.item) &&
+				    (response.index == request.index)) {
+					response_received = true;
+					break;
+				}
+#else
 					if ((response.request_type == request.request_type) &&
 					    (response.item == request.item) &&
 					    (response.index == request.index)) {
 						response_received = true;
 						break;
 					}
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+			} else if (request.client_id == CLIENT_ID_NOT_SET) {
+#else
 				} else if (request.client_id == CLIENT_ID_NOT_SET) {
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+				// validate timestamp from response.data
+				if (0 == memcmp(&(request.timestamp), &(response.data), sizeof(hrt_abstime))) {
+					response_received = true;
+					break;
+#else
 					// validate timestamp from response.data
 					if (0 == memcmp(&(request.timestamp), &(response.data), sizeof(hrt_abstime))) {
 						response_received = true;
 						break;
 					}
+#endif /* __PX4_FREERTOS */
 				}
 			}
 		}

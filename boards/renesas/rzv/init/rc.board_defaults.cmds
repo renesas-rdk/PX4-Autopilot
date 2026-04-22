@@ -1,0 +1,384 @@
+# Copyright (c) 2025 Renesas Electronics Corporation and/or its affiliates
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# rc.board_defaults.cmds — RZ/V2H S500 Drone factory param defaults
+
+# S500 Generic: 4014
+param set SYS_AUTOSTART     4014
+param set SYS_AUTOCONFIG    0
+param set MAV_TYPE          2
+param set BAT1_N_CELLS      4
+param set BAT1_CAPACITY     5300
+param set CBRK_SUPPLY_CHK   894281
+param set CBRK_FLIGHTTERM   0
+# param set CBRK_IO_SAFETY    0
+param set COM_ARM_WO_GPS    1
+param set COM_OBS_AVOID     0
+# SDLOG_MODE == -1 means logging is disabled; CA55 storage is not needed
+param set SDLOG_MODE        -1
+# SDLOG_PROFILE and SDLOG_UTC_OFFSET → moved to config.txt (user operational pref, not hardware-specific).
+# Edit /drone-data/cr8_data/etc/config.txt on SD card to change without rebuild.
+# WARNING: config.txt wins over BSON — QGC changes to these params won't persist.
+# param set SDLOG_PROFILE     17
+# param set SDLOG_UTC_OFFSET  0
+param set SYS_HAS_BARO      1
+param set SYS_HAS_GPS       1
+param set SYS_HAS_MAG       1
+param set SYS_HAS_GPS       1
+param set SYS_HAS_MAG       1
+param set GPS_1_CONFIG      201
+# GPS_SAT_INFO: To view satellites info (default 0: disable, 1: enable)
+param set GPS_SAT_INFO      1
+# Flight modes (RC_MAP_FLTMODE=CH5, 3-pos switch → 3 positions × 2 slots each)
+# 8=Stabilized  1=Altitude(baro+TFmini)  4=Hold
+# Switch LOW (pos 1-2):  Stabilized  — manual attitude, no auto-hold
+# Switch MID (pos 3-4):  Altitude    — height hold via baro+TFmini
+# Switch HIGH (pos 5-6): Hold (position hold)
+param set COM_FLTMODE1      8
+param set COM_FLTMODE4      1
+param set COM_FLTMODE6      4
+param set RC1_MAX           2007
+param set RC1_MIN           1015
+param set RC1_TRIM          1510
+param set RC2_MAX           2013
+param set RC2_MIN           1012
+param set RC2_TRIM          1505
+param set RC3_MAX           2013
+param set RC3_MIN           1025
+param set RC3_TRIM          1025
+param set RC4_MAX           2013
+param set RC4_MIN           1012
+param set RC4_TRIM          1497
+param set RC5_MAX           2014
+param set RC5_MIN           1012
+param set RC5_TRIM          1513
+param set RC6_MAX           2014
+param set RC6_MIN           1012
+param set RC6_TRIM          1513
+param set RC7_MAX           2014
+param set RC7_MIN           1012
+param set RC7_TRIM          1513
+param set RC8_MAX           2014
+param set RC8_MIN           1012
+param set RC8_TRIM          1513
+param set RC_INPUT_PROTO    2
+param set RC_CHAN_CNT       18
+param set RC_MAP_ROLL       1
+param set RC_MAP_PITCH      2
+param set RC_MAP_THROTTLE   3
+param set RC_MAP_YAW        4
+param set RC_MAP_FLTMODE    5
+param set RC_MAP_RETURN_SW  6
+param set RC_MAP_ARM_SW     7
+param set RC_MAP_KILL_SW    8
+# Manual control input source configuration (default 3)
+param set COM_RC_IN_MODE    2
+# Sensor calibration parameters
+param set SENS_BOARD_X_OFF  2.2
+param set SENS_BOARD_Y_OFF  -2.5
+
+param set CAL_ACC0_ID       2368514
+param set CAL_ACC0_PRIO     50
+param set CAL_ACC0_XOFF     -0.047
+param set CAL_ACC0_XSCALE   0.996
+param set CAL_ACC0_YOFF     -0.192
+param set CAL_ACC0_YSCALE   1.001
+param set CAL_ACC0_ZOFF     -0.096
+param set CAL_ACC0_ZSCALE   0.986
+
+param set CAL_BARO0_ID      4159033
+param set CAL_BARO0_PRIO    50
+
+param set CAL_GYRO0_ID      2368514
+param set CAL_GYRO0_PRIO    50
+param set CAL_GYRO0_XOFF    -0.027
+param set CAL_GYRO0_YOFF    -0.219
+param set CAL_GYRO0_ZOFF    -0.022
+
+# MAG calibration should be refreshed after bench verification.
+# This board now boots with MPU9250 AK8963 enabled plus the Holybro M10 external IST8310.
+# Keep the existing values only as a temporary baseline until fresh calibration is complete.
+param set CAL_MAG0_ID       271362
+param set CAL_MAG0_PRIO     50
+param set CAL_MAG0_XODIAG   -0.013
+param set CAL_MAG0_XOFF     0.471
+param set CAL_MAG0_XSCALE   0.986
+param set CAL_MAG0_YODIAG   0.010
+param set CAL_MAG0_YOFF     -0.236
+param set CAL_MAG0_YSCALE   0.950
+param set CAL_MAG0_ZODIAG   0.002
+param set CAL_MAG0_ZOFF     0.438
+param set CAL_MAG0_ZSCALE   1.030
+# Airframe configuration
+# S500 X-quad: +X forward, +Y right (PX4 body frame)
+# PWM_MAIN_FUNC1=101 → Motor 1 = ROTOR0, FUNC2=102 → Motor 2 = ROTOR1, etc.
+# Physical motor spin (verified by user):
+#   Motor 1 (ROTOR0, front-right +x+y): CCW
+#   Motor 2 (ROTOR1, rear-left  -x-y):  CCW
+#   Motor 3 (ROTOR2, front-left +x-y):  CW
+#   Motor 4 (ROTOR3, rear-right -x+y):  CW
+#
+# PX4 KM sign convention (control_allocation):
+#   KM = yaw_torque / thrust.  A CCW motor (viewed from above) creates a
+#   CW reaction torque on the frame = NEGATIVE yaw in PX4 body frame.
+#   → CCW motor: KM < 0 (negative)
+#   → CW  motor: KM > 0 (positive)
+# NOTE: previous sign was inverted (KM=+0.05 for CCW) → yaw authority reversed
+#       → confirmed by log: tq[2]=-0.9 but drone yawed positive continuously.
+param set CA_ROTOR_COUNT    4
+param set CA_ROTOR0_PX      0.17
+param set CA_ROTOR0_PY      0.17
+param set CA_ROTOR1_PX      -0.17
+param set CA_ROTOR1_PY      -0.17
+param set CA_ROTOR2_PX      0.17
+param set CA_ROTOR2_PY      -0.17
+param set CA_ROTOR2_KM      -0.05
+param set CA_ROTOR3_PX      -0.17
+param set CA_ROTOR3_PY      0.17
+param set CA_ROTOR3_KM      -0.05
+# ===== IMU Vibration Filters =====
+# S500 frame + X2216 1100KV + 1045 props
+# Motor rotation at hover: ~6000-7000 RPM → ~100-117 Hz fundamental
+#
+# IMU_GYRO_CUTOFF: Butterworth LP filter before rate controller
+#   WARNING: raising above 40 Hz caused "angular velocity non-finite" NaN error
+#   during takeoff vibration (biquad IIR diverges on SPI glitch samples).
+#   Keep at 40 Hz (PX4 default) until SPI reliability is confirmed (Issue #12).
+param set IMU_GYRO_CUTOFF 40
+# IMU_INTEG_RATE: vehicle_imu publish rate (Hz). Default 200 Hz → with gyro DRDY at ~327 Hz,
+# vehicle_imu publishes every ~2 gyro samples → ~169 Hz actual. EKF2 and att_ctrl trigger on
+# vehicle_imu, so they were running at ~83–166 Hz. Set to 400 Hz so vehicle_imu publishes on
+# every gyro sample (~327 Hz), raising EKF2 to ~160–330 Hz and att_ctrl to ~330 Hz.
+param set IMU_INTEG_RATE 400
+# IMU_DGYRO_CUTOFF: D-term derivative LP filter (default 20 Hz)
+#   Reduced to 20 Hz to suppress D-term sawtooth noise from SPI FIFO empty events.
+param set IMU_DGYRO_CUTOFF 30
+# Accel LP: keep default 30 Hz
+# param set IMU_ACCEL_CUTOFF 30
+# Notch filter at motor vibration frequency
+# NOTE: correct param name is IMU_GYRO_NF0_FRQ (not FREQ — param not found otherwise)
+# S500 + X2216 1100KV: motor mechanical (1×RPM) measured via sensor_gyro_fft:
+#   idle=33-47 Hz, hover=50-65 Hz → static notch at 40 Hz covers idle/low throttle
+# Dynamic Notch Filter (IMU_GYRO_DNF_EN) tracks actual FFT peak per-axis automatically
+# param set IMU_GYRO_NF0_FRQ 40
+# param set IMU_GYRO_NF0_BW  20
+# IMU gyro dynamic notch filtering:
+#   bit0 (EscRpm=1): requires DShot ESC telemetry → Skywalker 40A is PWM-only, no RPM feedback → DISABLED
+#   bit1 (FFT=2):    uses sensor_gyro_fft peaks to track propeller vibration frequency per-axis → ENABLED
+#   IMU_GYRO_FFT_LEN=256: 256/8000Hz = 32ms buffer, resolution=31.25 Hz/bin — sufficient to track
+#     S500 propeller fundamental (idle ~33Hz, hover ~65Hz). Lower memory/CPU than default 512.
+#   IMU_GYRO_FFT_EN=1: activates the gyro_fft module (default 0 = disabled, no FFT computed).
+#   gyro_fft module (CONFIG_MODULES_GYRO_FFT=y) is already started above.
+param set IMU_GYRO_DNF_EN  2
+param set IMU_GYRO_FFT_EN  1
+# param set IMU_GYRO_FFT_LEN 256
+
+# ===== PID Tuning — S500 + SunnySky X2216 1100KV (conservative starting values) =====
+# Frame: S500 500mm diagonal, ~250mm arm length
+# AUW est. ~1400-1600g (4S 1045 props)
+# K=1.0 is the overall rate gain multiplier (standard PX4 setup)
+# mc_autotune_attitude_control is running → will auto-refine after stable hover
+
+# --- Roll/Pitch Rate (inner loop) ---
+# Used values in autoturn but reduced the K from 1.0 to 0.3~0.4
+param set MC_ROLLRATE_K  0.5900
+param set MC_ROLLRATE_P  0.1430
+param set MC_ROLLRATE_I  0.2250
+param set MC_ROLLRATE_D  0.0040
+param set MC_PITCHRATE_K 0.5600
+param set MC_PITCHRATE_P 0.1390
+param set MC_PITCHRATE_I 0.3500
+param set MC_PITCHRATE_D 0.0036
+# # --- Yaw Rate ---
+param set MC_YAWRATE_K   0.6000
+param set MC_YAWRATE_P   0.0930
+param set MC_YAWRATE_I   0.2400
+param set MC_YAWRATE_D   0.0028
+
+# # --- Attitude (outer loop) ---
+param set MC_ROLL_P      6.5
+param set MC_PITCH_P     6.5
+param set MC_YAW_P       5.0
+
+param set THR_MDL_FAC    0.3
+# MPC_THR_HOVER: initial hover thrust estimate before mc_hover_thrust_estimator converges.
+# S500 + X2216 1100KV + 4S + 1045 props, AUW ~1500g: approx 45-50% throttle.
+# Default 0.5 is OK; estimator refines automatically after first stable hover.
+# If drone climbs at center stick → lower this; if descends → raise it.
+param set MPC_THR_HOVER  0.45
+# MPC_LAND_SPEED: descent speed during blind land failsafe (default 0.7 m/s).
+# Reduce to 0.5 m/s so that if blind land triggers, drone descends slowly.
+param set MPC_LAND_SPEED 0.5
+# === Indoor Vertical Dynamics (conservative) ===
+# MPC_Z_VEL_MAX_UP=1.5: limit ascent to 1.5 m/s (default 3.0 too fast indoors).
+# Full up-stick = 1.5 m/s instead of 3.0 → prevents shooting past ceiling.
+param set MPC_Z_VEL_MAX_UP 1.5
+# MPC_Z_VEL_MAX_DN=1.0: limit descent to 1.0 m/s (default 1.5).
+param set MPC_Z_VEL_MAX_DN 1.0
+# MPC_ACC_UP_MAX=2.0: gentler upward acceleration (default 4.0).
+param set MPC_ACC_UP_MAX 2.0
+# MPC_ACC_DOWN_MAX=2.0: gentler downward acceleration (default 3.0).
+param set MPC_ACC_DOWN_MAX 2.0
+# MPC_MAN_TILT_MAX=25: limit max tilt in altitude mode (default 35°).
+# Prevents drone from accelerating sideways too fast indoors.
+param set MPC_MAN_TILT_MAX 25
+
+param set PWM_MAIN_FUNC1    101
+param set PWM_MAIN_FUNC2    102
+param set PWM_MAIN_FUNC3    103
+param set PWM_MAIN_FUNC4    104
+param set PWM_MAIN_MIN1     1150
+param set PWM_MAIN_MIN2     1150
+param set PWM_MAIN_MIN3     1150
+param set PWM_MAIN_MIN4     1150
+# for safety testing (default is 1900-2000)
+# NOTE: Removed hardcoded 1500 here because if QGC sets overrides to the system
+# default (2000), PX4 skips saving them. On reboot, these 1500 lines would win and
+# "revert" your QGC changes. If you want a hard limit, set it via QGC explicitly
+# to a non-default value (e.g. 1940), or just rely on QGC's 2000 default.
+param set PWM_MAIN_MAX1     1940
+param set PWM_MAIN_MAX2     1940
+param set PWM_MAIN_MAX3     1940
+param set PWM_MAIN_MAX4     1940
+# Disarmed value MUST be below ESC arm threshold (~1000us) so ESC truly disarms
+# when PX4 disarms. At 1000us the ESC stays armed (zero throttle but responsive),
+# causing brief spin-up on power-off due to GPT glitch during supply collapse.
+param set PWM_MAIN_DIS1     800
+param set PWM_MAIN_DIS2     800
+param set PWM_MAIN_DIS3     800
+param set PWM_MAIN_DIS4     800
+# Failsafe: also output below arm threshold on RC loss
+param set PWM_MAIN_FAIL1    800
+param set PWM_MAIN_FAIL2    800
+param set PWM_MAIN_FAIL3    800
+param set PWM_MAIN_FAIL4    800
+# Motor idle throttle: set to 15% to prevent mid-air stalls from insufficient thrust at low throttle (default 0.12 = 12%)
+# param set MPC_THR_MIN       0.15
+# === EKF2 Configuration (GPS + MAG enabled, TFmini primary altitude) ===
+# === EKF2 Configuration (GPS + MAG enabled, TFmini primary altitude) ===
+# Magnetometer fusion type:
+#   0 = AUTO    (default) should use when has GPS M10 + external mag
+#   1 = Magnetic heading
+#   5 = NONE    (no mag fusion at all)
+#   6 = INIT    (use mag for initial heading only)
+# With GPS + MAG present, allow PX4 to select the best fusion mode automatically.
+# param set EKF2_MAG_TYPE 5
+# Height sources: TFmini = primary height reference, BMP280 = safety fallback.
+#
+# EKF2_HGT_REF=2 (Range sensor): TFmini is the primary height reference.
+#   rng_hgt=true: rangefinder fuses into EKF2 HEIGHT state → Local Position Z is TFmini-based.
+#   MPC_ALT_MODE=2 falls back to earth frame when dist_bottom_valid=0 (PX4 design constraint
+#   with HGT_REF=2 — range cannot simultaneously be height ref AND terrain source in EKF2).
+#   Earth frame altitude with HGT_REF=2 IS TFmini-referenced → altitude hold works correctly.
+#
+# EKF2_BARO_CTRL=1: baro enabled as safety fallback.
+#   EKF2_BARO_NOISE=10.0: very high noise → EKF2 barely trusts baro; rangefinder dominates.
+#   Prevents altitude-invalid if rangefinder temporarily out-of-range.
+#
+# EKF2_RNG_CTRL=2: always fuse rangefinder (no altitude/speed gating).
+#   Default mode 1 drops TFmini at speed>1m/s or alt>5m → bad for fast maneuvers.
+param set EKF2_HGT_REF    2
+param set EKF2_BARO_CTRL  1
+param set EKF2_BARO_NOISE 10.0
+# EKF2_RNG_CTRL=2: always fuse rangefinder (not conditional).
+# Default=1 (conditional) drops TFmini when speed>1m/s or alt>5m → EKF2 falls back to baro → bad z estimate.
+# Mode 2 = always enabled, no altitude/speed gating — correct for indoor < 12m.
+param set EKF2_RNG_CTRL   2
+# EKF2_RNG_QLTY_T=0.5: reduce quality hysteresis from default 1.0s → 0.5s.
+# TFmini Plus on-ground reads ~0.03m (below min range 0.1m) → quality flickers →
+# 1.0s too strict → rangefinder fusion never starts on some boots → z_valid=false.
+param set EKF2_RNG_QLTY_T 0.5
+# EKF2_RNG_K_GATE=2.0: increase kinematic consistency gate from default 1.0 → 2.0 SD.
+# MPU9250 SPI noise causes noisy velocity estimates → false kinematic inconsistency →
+# rangefinder data rejected even when valid.
+param set EKF2_RNG_K_GATE 2.0
+# EKF2_RNG_NOISE=0.05: TFmini Plus accuracy ±1cm at close range (default 0.1m too pessimistic).
+# Lower noise → EKF2 trusts rangefinder more over baro backup.
+param set EKF2_RNG_NOISE 0.05
+# EKF2 IMU & attitude estimation tuning (S500 + MPU9250, no GPS)
+# ACC_NOISE: lower = trust accelerometer more for tilt correction.
+#   Reduced from 0.4 → 0.15 because MPU9250 SPI produces ~45% NaN gyro samples;
+#   EKF2 must rely on gravity (accelerometer) to maintain correct level attitude.
+# param set EKF2_ACC_NOISE 0.15
+# Initial tilt angle uncertainty: 0.2 rad (~11.5°) instead of default 0.1 rad (~5.7°)
+# Prevents filter from being overconfident on initial attitude estimate at boot
+param set EKF2_ANGERR_INIT 0.2
+# Switch-on gyro bias 1-sigma: raised to 0.15 rad/s (default 0.1) — more margin for MPU9250 bias
+param set EKF2_GBIAS_INIT 0.15
+# Accel bias process noise: 0.005 m/s³ (default 0.003) — faster bias convergence on ground
+param set EKF2_ACC_B_NOISE 0.005
+# IMU control: bit0=gyro_bias, bit1=accel_bias, bit2=gravity_fusion (requires CONFIG_EKF2_GRAVITY_FUSION=y)
+param set EKF2_IMU_CTRL 7
+# MPC_ALT_MODE=2: terrain hold — uses terrain (rangefinder) when stationary, earth frame when moving.
+# Mode 1 (terrain following) requires continuous valid dist_bottom (FlightTaskManualAltitude.cpp:152).
+# Flight logs show dist_bottom_valid=0 in both sessions → mode 1 silently degrades to earth frame.
+# Mode 2 is more robust: terrain hold when stopped + rangefinder valid, earth frame otherwise.
+# Still provides ground-relative height hold for 0.5-1m indoor hover when stationary.
+param set MPC_ALT_MODE 2
+# param set MIS_TAKEOFF_ALT 1.5
+# ===== Failure Detection Configuration =====
+# Imbalanced propeller check threshold. Set to 0 to disable.
+# S500 + 1045 props + known SPI noise elevates var_accel metric even at rest.
+# Disable entirely (0 = feature disabled per param docs).
+# param set FD_IMB_PROP_THR 0
+# Enabled Actuator Failure check (default disable)
+param set FD_ACT_EN 1
+# Disable checks on ESCs that report their arming state (default enabled)
+# param set FD_ESCS_EN 0
+# Motor Failure Throttle Threshold (default 0.2)
+# param set FD_ACT_MOT_THR 0.5
+# Disable FailureDetector Max Pitch/Roll (default 60 deg)
+# param set FD_FAIL_P 0
+# param set FD_FAIL_R 0
+
+# === FreeRTOS/RZ/V platform: no local SD card on CR8 ===
+param set COM_ARM_SDCARD 0
+
+# === Power supply check — no power module on this build ===
+# "Preflight Fail: system power unavailable" arming block.
+# Default COM_POWER_COUNT=1 requires a power module reporting battery voltage.
+# Set to 0 to disable check until a power module is connected and configured.
+# param set COM_POWER_COUNT 0
+
+# === RAM / CPU health checks — disable hard-fail to prevent arming blocks ===
+# FreeRTOS heap is 8 MB; malloc fragmentation and static allocations push usage
+# above the default 90% threshold long before anything is actually wrong.
+# Set to 0 = no limit (Commander check disabled).
+# param set COM_RAM_MAX 0
+# param set COM_CPU_MAX 0
+
+# === Geofence Configuration (DISABLE for Indoor/No-GPS) ===
+# Disable geofence action (default 2 = Hold mode)
+param set GF_ACTION 2
+
+# === Magnetometer Interference Check ===
+# Disable mag field strength / interference arming check (bench: EMI from metal expected)
+# 0 = disabled, 1 = block arming (PX4 default), 2 = warning only
+param set COM_ARM_MAG_STR 0
+
+# Do not auto-disarm when preflight checks fail while already in-flight.
+# Default 10s auto-disarm during flight if preflight fail — dangerous if ghost
+# noise triggers a "Kill switch engaged" / "RTL switch engaged" preflight fail.
+param set COM_DISARM_PRFLT -1
+
+# === GCS link loss failsafe (CRITICAL safety) ===
+# Default NAV_DLL_ACT=0 (disabled) is DANGEROUS: if QGC link is lost while armed
+# (e.g. CA55/WiFi crash, SiK RF interference), PX4 detects gcs_connection_lost but
+# takes no action — drone spins indefinitely with no way to stop it.
+# Disarm (6): immediately disarm on link loss — safest option for indoor/no-GPS where no safe RTL/land location exists.
+# Land (3): descend at current position, no GPS required.
+# RTL (2) is still avoided here during bring-up; GPS lock quality is not guaranteed at every boot.
+# Hold (1): hold position on link loss — not ideal for indoor/no-GPS, but better than nothing if you have a good hold tune.
+# param set NAV_DLL_ACT   1
+param set COM_DL_LOSS_T 5
+
+# === RC loss failsafe ===
+# Default NAV_RCL_ACT=2 (RTL) is avoided during bring-up even though GPS is enabled.
+# Disarm (6): immediately disarm on RC loss — safest option for indoor/no-GPS where no safe RTL/land location exists.
+# Land (3): descend at current position, no GPS required.
+param set NAV_RCL_ACT   6
+
+# ===== Actuator Failure Action =====
+# Disabled imbalanced propeller action (default 0 Warning)
+# param set COM_IMB_PROP_ACT -1

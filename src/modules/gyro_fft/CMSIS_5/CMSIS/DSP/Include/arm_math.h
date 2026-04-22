@@ -387,7 +387,12 @@ extern "C"
 #pragma GCC diagnostic ignored "-Wattributes"
 
 #else
+#if defined(__PX4_FREERTOS)
+/* Use FSP CMSIS compatibility header when building for RZV2H+FSP */
+#include "cmsis_fsp_compat.h"
+#else
 #include "cmsis_compiler.h"
+#endif /* __PX4_FREERTOS */
 #endif
 
 

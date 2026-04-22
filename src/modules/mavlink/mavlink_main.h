@@ -48,14 +48,20 @@
 #ifdef __PX4_NUTTX
 #include <nuttx/fs/fs.h>
 #else
+#if !defined(__PX4_FREERTOS)
 #include <arpa/inet.h>
+#endif /* __PX4_FREERTOS */
 #include <drivers/device/device.h>
+#if !defined(__PX4_FREERTOS)
 #include <sys/socket.h>
+#endif /* __PX4_FREERTOS */
 #endif
 
+#if !defined(__PX4_FREERTOS)
 #if defined(CONFIG_NET) || !defined(__PX4_NUTTX)
 #include <net/if.h>
 #include <netinet/in.h>
+#endif /* __PX4_FREERTOS */
 #endif
 
 #include <containers/List.hpp>
@@ -91,10 +97,12 @@
 
 #define HASH_PARAM              "_HASH_CHECK"
 
+#if !defined(__PX4_FREERTOS)
 #if defined(CONFIG_NET) || defined(__PX4_POSIX)
 # define MAVLINK_UDP
 # define DEFAULT_REMOTE_PORT_UDP 14550 ///< GCS port per MAVLink spec
 #endif // CONFIG_NET || __PX4_POSIX
+#endif /* __PX4_FREERTOS */
 
 enum class Protocol {
 	SERIAL = 0,
@@ -181,6 +189,9 @@ public:
 	void			check_events_disable() { _should_check_events.store(false); }
 
 	int			get_uart_fd() const { return _uart_fd; }
+#if defined(__PX4_FREERTOS)
+	const char		*get_device_name() const { return _device_name; }
+#endif /* __PX4_FREERTOS */
 
 	/**
 	 * Get the MAVLink system id.

@@ -73,6 +73,9 @@
 #include "checks/offboardCheck.hpp"
 #include "checks/openDroneIDCheck.hpp"
 #include "checks/externalChecks.hpp"
+#ifdef __PX4_FREERTOS
+#include "checks/ca55Check.hpp"
+#endif
 
 class HealthAndArmingChecks : public ModuleParams
 {
@@ -160,8 +163,11 @@ private:
 #ifndef CONSTRAINED_FLASH
 	ExternalChecks _external_checks;
 #endif
+#ifdef __PX4_FREERTOS
+	CA55ReadinessCheck _ca55_readiness_check;
+#endif
 
-	HealthAndArmingCheckBase *_checks[40] = {
+	HealthAndArmingCheckBase *_checks[41] = {
 #ifndef CONSTRAINED_FLASH
 		&_external_checks,
 #endif
@@ -197,5 +203,8 @@ private:
 		&_flight_time_checks,
 		&_rc_and_data_link_checks,
 		&_vtol_checks,
+#ifdef __PX4_FREERTOS
+		&_ca55_readiness_check,
+#endif
 	};
 };

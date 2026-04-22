@@ -51,6 +51,9 @@ public:
 	virtual int init() = 0;
 
 	virtual int send_output_pwm(const uint16_t *pwm, int num_outputs) = 0;
+#if defined(__PX4_FREERTOS)
+	virtual void set_armed(bool armed) { (void)armed; }
+#endif /* __PX4_FREERTOS */
 };
 
 

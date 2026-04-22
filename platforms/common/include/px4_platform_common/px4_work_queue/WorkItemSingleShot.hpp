@@ -66,6 +66,9 @@ public:
 	WorkItemSingleShot &operator=(WorkItemSingleShot &&) = delete;
 
 	void wait();
+#if defined(__PX4_FREERTOS)
+	bool wait_for(uint32_t timeout_ms);
+#endif /* __PX4_FREERTOS */
 protected:
 	void Run() override;
 private:

@@ -480,7 +480,7 @@ static const StreamListItem streams_list[] = {
 #if defined(LINK_NODE_STATUS_HPP)
 	create_stream_list_item<MavlinkStreamLinkNodeStatus>(),
 #endif // LINK_NODE_STATUS_HPP
-#if defined(STORAGE_INFORMATION_HPP)
+#if defined(STORAGE_INFORMATION_HPP) && !defined(__PX4_FREERTOS)
 	create_stream_list_item<MavlinkStreamStorageInformation>(),
 #endif // STORAGE_INFORMATION_HPP
 #if defined(COMPONENT_INFORMATION_HPP)

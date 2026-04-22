@@ -32,12 +32,14 @@
 ############################################################################
 
 
-add_subdirectory(px4_daemon)
+if(NOT CONFIG_BOARD_DISABLE_PX4_DAEMON)
+    add_subdirectory(px4_daemon)
+endif()
 add_subdirectory(lockstep_scheduler)
 
 set(EXTRA_DEPENDS)
 
-add_library(px4_layer
+set(px4_layer_sources
 	px4_posix_impl.cpp
 	tasks.cpp
 	px4_sem.cpp
@@ -46,13 +48,27 @@ add_library(px4_layer
 	drv_hrt.cpp
 	cpuload.cpp
 	print_load.cpp
-	${PX4_SOURCE_DIR}/platforms/common/Serial.cpp
-	SerialImpl.cpp
 )
+
+if(NOT CONFIG_BOARD_DISABLE_SERIAL)
+	list(APPEND px4_layer_sources
+		${PX4_SOURCE_DIR}/platforms/common/Serial.cpp
+		SerialImpl.cpp
+	)
+endif()
+
+add_library(px4_layer ${px4_layer_sources})
+px4_register_archive(px4_layer)
 target_compile_definitions(px4_layer PRIVATE MODULE_NAME="px4")
 target_compile_options(px4_layer PRIVATE -Wno-cast-align) # TODO: fix and enable
+target_compile_options(px4_layer PRIVATE -Wno-psabi) # suppress GCC psABI churn notes in std headers
 target_link_libraries(px4_layer PRIVATE work_queue px4_work_queue)
-target_link_libraries(px4_layer PRIVATE px4_daemon drivers_board)
+
+if(NOT CONFIG_BOARD_DISABLE_PX4_DAEMON)
+    target_link_libraries(px4_layer PRIVATE px4_daemon)
+endif()
+
+target_link_libraries(px4_layer PRIVATE drivers_board)
 
 if(ENABLE_LOCKSTEP_SCHEDULER)
 	target_link_libraries(px4_layer PRIVATE lockstep_scheduler)

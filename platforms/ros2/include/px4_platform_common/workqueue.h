@@ -43,6 +43,9 @@
 
 #include <stdint.h>
 #include <queue.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/sem.h>
+#endif /* __PX4_FREERTOS */
 
 __BEGIN_DECLS
 
@@ -53,6 +56,9 @@ __BEGIN_DECLS
 struct wqueue_s {
 	pid_t             pid; /* The task ID of the worker thread */
 	struct dq_queue_s q;   /* The queue of pending work */
+#if defined(__PX4_FREERTOS)
+	px4_sem_t         wait_sem; /* Wake-up semaphore for new work */
+#endif /* __PX4_FREERTOS */
 };
 
 extern struct wqueue_s g_work[NWORKERS];

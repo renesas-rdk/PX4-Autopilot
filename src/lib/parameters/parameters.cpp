@@ -49,6 +49,12 @@
 
 #include <crc32.h>
 #include <float.h>
+#if defined(__PX4_FREERTOS)
+#include <limits.h>
+#include <atomic>
+#include <new>
+#include <px4_platform_common/tasks.h>
+#endif /* __PX4_FREERTOS */
 #include <math.h>
 
 #include <containers/Bitset.hpp>
@@ -95,6 +101,11 @@ static char *param_default_file = nullptr;
 static char *param_backup_file = nullptr;
 
 #include "autosave.h"
+#if defined(__PX4_FREERTOS)
+static std::atomic_bool param_save_async_in_progress{false};
+#include "io_worker.h"
+#include "remote_storage_rpc_async.h"
+#endif /* __PX4_FREERTOS */
 static ParamAutosave *autosave_instance {nullptr};
 
 static px4::AtomicBitset<param_info_count> params_active;  // params found
@@ -117,6 +128,10 @@ static perf_counter_t param_set_perf;
 
 static pthread_mutex_t file_mutex  =
 	PTHREAD_MUTEX_INITIALIZER; ///< this protects against concurrent param saves (file or flash access).
+#if defined(__PX4_FREERTOS)
+static std::atomic<unsigned> g_param_find_failures{0};
+static std::atomic<unsigned> g_param_get_invalid{0};
+#endif /* __PX4_FREERTOS */
 
 // Support for remote parameter node
 #if defined(CONFIG_PARAM_PRIMARY)
@@ -147,6 +162,28 @@ param_init()
 #endif // CONFIG_PARAM_REMOTE
 
 #if not defined(CONFIG_PARAM_REMOTE)
+#if defined(__PX4_FREERTOS)
+	// Initialize I/O worker for async file operations
+	// Only if there's enough free heap memory (>150KB recommended)
+	extern size_t xPortGetFreeHeapSize(void);
+	const size_t free_heap = xPortGetFreeHeapSize();
+	constexpr size_t MIN_HEAP_FOR_IO_WORKER = 150 * 1024; // 150KB
+
+	if (free_heap >= MIN_HEAP_FOR_IO_WORKER) {
+		int io_ret = io_worker_init();
+
+		if (io_ret != 0) {
+			PX4_WARN("Failed to initialize I/O worker (%d), falling back to blocking saves", io_ret);
+		} else {
+			PX4_INFO("I/O worker initialized for async RPC (heap free: %zu bytes)", free_heap);
+		}
+
+	} else {
+		PX4_WARN("Insufficient heap for I/O worker (%zu < %zu bytes), using blocking saves",
+			 free_heap, MIN_HEAP_FOR_IO_WORKER);
+	}
+
+#endif /* __PX4_FREERTOS */
 	autosave_instance = new ParamAutosave();
 #endif
 }
@@ -213,6 +250,16 @@ static param_t param_find_internal(const char *name, bool notification)
 	}
 
 	/* not found */
+#if defined(__PX4_FREERTOS)
+	if (notification) {
+		const unsigned fail_index = g_param_find_failures.fetch_add(1);
+
+		if (fail_index < 16) {
+			PX4_WARN("[THRONE][PARAM] find failed for '%s'", name);
+		}
+	}
+
+#endif /* __PX4_FREERTOS */
 	return PARAM_INVALID;
 }
 
@@ -289,7 +336,23 @@ param_get(param_t param, void *val)
 	perf_count(param_get_perf);
 
 	if (!handle_in_range(param)) {
+#if defined(__PX4_FREERTOS)
+		const unsigned fail_index = g_param_get_invalid.fetch_add(1);
+		const char *task = px4_get_taskname();
+
+		if (task == nullptr) {
+			task = "<unknown>";
+		}
+
+		if (fail_index < 16) {
+			PX4_ERR("[THRONE][PARAM] get invalid handle=%" PRId16 " task=%s", param, task);
+		} else {
+			PX4_ERR("get: param %" PRId16 " invalid", param);
+		}
+
+#else
 		PX4_ERR("get: param %" PRId16 " invalid", param);
+#endif /* __PX4_FREERTOS */
 		return PX4_ERROR;
 	}
 
@@ -786,6 +849,17 @@ int param_save_default(bool blocking)
 {
 	PX4_DEBUG("param_save_default");
 
+#if defined(__PX4_FREERTOS)
+	if (param_save_async_in_progress.load()) {
+		if (!blocking) {
+			return -EWOULDBLOCK;
+		}
+
+		while (param_save_async_in_progress.load()) {
+			px4_usleep(1000);
+		}
+	}
+#endif /* __PX4_FREERTOS */
 	// take the file lock
 	if (blocking) {
 		pthread_mutex_lock(&file_mutex);
@@ -808,6 +882,11 @@ int param_save_default(bool blocking)
 
 	if (filename) {
 		static constexpr int MAX_ATTEMPTS = 3;
+#if defined(__PX4_FREERTOS)
+		// Remote microSD on CA55: verification reads back through RPMsg/text conversion and can
+		// disagree due to precision or side effects. Allow skipping verify for that path.
+		const bool skip_verify = (strncmp(filename, "/fs/microsd/params", 18) == 0);
+#endif /* __PX4_FREERTOS */
 
 		for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
 			// write parameters to file
@@ -819,7 +898,11 @@ int param_save_default(bool blocking)
 				perf_end(param_export_perf);
 				::close(fd);
 
+#if defined(__PX4_FREERTOS)
+				if (res == PX4_OK && !skip_verify) {
+#else
 				if (res == PX4_OK) {
+#endif /* __PX4_FREERTOS */
 					// reopen file to verify
 					int fd_verify = ::open(filename, O_RDONLY, PX4_O_MODE_666);
 					res = param_verify(fd_verify) || lseek(fd_verify, 0, SEEK_SET) || param_verify(fd_verify);
@@ -877,6 +960,507 @@ int param_save_default(bool blocking)
 
 	return res;
 }
+#if defined(__PX4_FREERTOS)
+static int param_export_to_bson_buffer(uint8_t **buffer_out, size_t *buffer_len_out)
+{
+	if (!buffer_out || !buffer_len_out) {
+		return -EINVAL;
+	}
+
+	const auto changed_params = user_config.containedAsBitset();
+	bson_encoder_s encoder{};
+	int result = -1;
+
+	if (bson_encoder_init_buf(&encoder, nullptr, 0) != 0) {
+		return -EIO;
+	}
+
+	for (param_t param = 0; handle_in_range(param); param++) {
+		if (!changed_params[param]) {
+			continue;
+		}
+
+		const param_value_u runtime_default_value = runtime_defaults.get(param);
+		const param_value_u user_config_value = user_config.get(param);
+
+		switch (param_type(param)) {
+		case PARAM_TYPE_INT32:
+			if (user_config_value.i == runtime_default_value.i) {
+				continue;
+			}
+
+			if (bson_encoder_append_int32(&encoder, param_name(param), user_config_value.i) != 0) {
+				goto out;
+			}
+
+			break;
+
+		case PARAM_TYPE_FLOAT:
+			if (fabsf(user_config_value.f - runtime_default_value.f) <= FLT_EPSILON) {
+				continue;
+			}
+
+			if (bson_encoder_append_double(&encoder, param_name(param),
+						      static_cast<double>(user_config_value.f)) != 0) {
+				goto out;
+			}
+
+			break;
+
+		default:
+			PX4_ERR("%s unrecognized parameter type %d, skipping export",
+				param_name(param), param_type(param));
+			break;
+		}
+	}
+
+	result = 0;
+
+out:
+	if (result == 0) {
+		if (bson_encoder_fini(&encoder) != PX4_OK) {
+			result = -EIO;
+		}
+	}
+
+	if (result != 0) {
+		void *buf = bson_encoder_buf_data(&encoder);
+
+		if (buf) {
+			free(buf);
+		}
+
+		return result;
+	}
+
+	const int buf_len = bson_encoder_buf_size(&encoder);
+	void *buf = bson_encoder_buf_data(&encoder);
+
+	if (!buf || buf_len <= 0) {
+		if (buf) {
+			free(buf);
+		}
+
+		return -EIO;
+	}
+
+	*buffer_out = static_cast<uint8_t *>(buf);
+	*buffer_len_out = static_cast<size_t>(buf_len);
+	return 0;
+}
+
+struct ParamSaveAsyncContext {
+	param_save_async_callback_t callback;
+	void *user_data;
+	uint8_t *buffer;
+	size_t buffer_len;
+	size_t write_offset;
+	size_t write_chunk;
+	size_t total_written;
+	uint32_t write_calls;
+	int fd;
+	int shutdown_lock_ret;
+	const char *backup_path;
+	bool saving_backup;
+	int pending_result;
+	hrt_abstime start_time;
+};
+
+static constexpr size_t kRpcWriteChunk = 256;
+
+static void param_save_async_finish(ParamSaveAsyncContext *ctx, int result, bool invoke_callback)
+{
+	if (!ctx) {
+		return;
+	}
+
+	if (result == 0) {
+		params_unsaved.reset();
+	}
+
+	if (ctx->start_time != 0) {
+		const hrt_abstime duration = hrt_absolute_time() - ctx->start_time;
+
+		if (duration > 200_ms) {
+			PX4_WARN("param save async took %lu ms (len=%zu, writes=%u)",
+				 (unsigned long)(duration / 1000U),
+				 ctx->buffer_len,
+				 (unsigned)ctx->write_calls);
+		}
+	}
+
+	if (ctx->shutdown_lock_ret == 0) {
+		px4_shutdown_unlock();
+	}
+
+	param_save_async_in_progress.store(false);
+
+	if (invoke_callback && ctx->callback) {
+		ctx->callback(result, ctx->user_data);
+	}
+
+	if (ctx->buffer) {
+		free(ctx->buffer);
+	}
+
+	delete ctx;
+}
+
+static void param_save_async_open_cb(int32_t request_id,
+				     int32_t return_value,
+				     int32_t errno_value,
+				     void *user_data);
+
+static void param_save_async_write_cb(int32_t request_id,
+				      int32_t return_value,
+				      int32_t errno_value,
+				      void *user_data);
+
+static void param_save_async_close_cb(int32_t request_id,
+				      int32_t return_value,
+				      int32_t errno_value,
+				      void *user_data);
+
+static int param_save_async_send_next_chunk(ParamSaveAsyncContext *ctx)
+{
+	if (!ctx) {
+		return -EINVAL;
+	}
+
+	if (ctx->write_offset >= ctx->buffer_len) {
+		return 0;
+	}
+
+	const size_t remaining = ctx->buffer_len - ctx->write_offset;
+	const size_t chunk = (remaining > kRpcWriteChunk) ? kRpcWriteChunk : remaining;
+	ctx->write_chunk = chunk;
+	ctx->write_calls++;
+
+	const int ret = rzv_remote_fs_write_async(ctx->fd,
+						  ctx->buffer + ctx->write_offset,
+						  chunk,
+						  param_save_async_write_cb,
+						  ctx);
+
+	if (ret < 0) {
+		return ret;
+	}
+
+	return 0;
+}
+
+static void param_save_async_open_cb(int32_t request_id,
+				     int32_t return_value,
+				     int32_t errno_value,
+				     void *user_data)
+{
+	auto *ctx = static_cast<ParamSaveAsyncContext *>(user_data);
+
+	if (!ctx) {
+		PX4_ERR("param_save_async_open_cb: NULL context (req_id=%ld)", (long)request_id);
+		return;
+	}
+
+	const hrt_abstime elapsed = hrt_elapsed_time(&ctx->start_time);
+	PX4_DEBUG("param_save_async_open_cb: req_id=%ld ret=%ld errno=%ld elapsed=%llu ms backup=%d",
+		  (long)request_id, (long)return_value, (long)errno_value,
+		  (unsigned long long)(elapsed / 1000), (int)ctx->saving_backup);
+
+	if (return_value < 0) {
+		const int result = (errno_value != 0) ? -errno_value : -EIO;
+
+		if (ctx->saving_backup) {
+			PX4_ERR("backup param save open failed (%d)", result);
+			param_save_async_finish(ctx, 0, true);
+			return;
+		}
+
+		PX4_ERR("param save open failed (%d, req_id=%ld)", result, (long)request_id);
+		param_save_async_finish(ctx, result, true);
+		return;
+	}
+
+	ctx->fd = return_value;
+	ctx->write_offset = 0;
+	ctx->write_chunk = 0;
+	ctx->total_written = 0;
+	ctx->write_calls = 0;
+
+	PX4_DEBUG("param_save_async: file opened (fd=%d, buffer_len=%zu, backup=%d)",
+		 ctx->fd, ctx->buffer_len, (int)ctx->saving_backup);
+
+	if (ctx->buffer_len == 0) {
+		ctx->pending_result = 0;
+		const int ret = rzv_remote_fs_close_async(ctx->fd, param_save_async_close_cb, ctx);
+
+		if (ret < 0) {
+			if (ctx->saving_backup) {
+				PX4_ERR("backup param save close enqueue failed (%d)", ret);
+				param_save_async_finish(ctx, 0, true);
+				return;
+			}
+
+			param_save_async_finish(ctx, ret, true);
+		}
+
+		return;
+	}
+
+	const int ret = param_save_async_send_next_chunk(ctx);
+
+	if (ret < 0) {
+		if (ctx->saving_backup) {
+			PX4_ERR("backup param save write enqueue failed (%d)", ret);
+			param_save_async_finish(ctx, 0, true);
+			return;
+		}
+
+		param_save_async_finish(ctx, ret, true);
+	}
+}
+
+static void param_save_async_write_cb(int32_t request_id,
+				      int32_t return_value,
+				      int32_t errno_value,
+				      void *user_data)
+{
+	auto *ctx = static_cast<ParamSaveAsyncContext *>(user_data);
+
+	if (!ctx) {
+		PX4_ERR("param_save_async_write_cb: NULL context (req_id=%ld)", (long)request_id);
+		return;
+	}
+
+	const size_t progress_pct = (ctx->buffer_len > 0) ?
+				     (ctx->write_offset * 100 / ctx->buffer_len) : 0;
+
+	PX4_DEBUG("param_save_async_write_cb: req_id=%ld ret=%ld errno=%ld offset=%zu/%zu (%zu%%) chunk=%zu calls=%u",
+		  (long)request_id, (long)return_value, (long)errno_value,
+		  ctx->write_offset, ctx->buffer_len, progress_pct,
+		  ctx->write_chunk, (unsigned)ctx->write_calls);
+
+	int result = 0;
+
+	if (return_value < 0) {
+		result = (errno_value != 0) ? -errno_value : -EIO;
+		PX4_ERR("param_save_async_write failed: req_id=%ld ret=%ld errno=%ld result=%d",
+			(long)request_id, (long)return_value, (long)errno_value, result);
+
+	} else if (static_cast<size_t>(return_value) != ctx->write_chunk) {
+		result = -EIO;
+		PX4_ERR("param_save_async_write partial: req_id=%ld expected=%zu got=%ld",
+			(long)request_id, ctx->write_chunk, (long)return_value);
+	}
+
+	if (result == 0) {
+		ctx->write_offset += ctx->write_chunk;
+		ctx->total_written += ctx->write_chunk;
+
+		if (ctx->write_offset < ctx->buffer_len) {
+			// Log progress every 25%
+			const size_t new_progress_pct = (ctx->write_offset * 100 / ctx->buffer_len);
+
+			if ((new_progress_pct / 25) > (progress_pct / 25)) {
+				PX4_DEBUG("param_save_async: write progress %zu%% (%zu/%zu bytes, %u calls)",
+					 new_progress_pct, ctx->write_offset, ctx->buffer_len, (unsigned)ctx->write_calls);
+			}
+
+			const int send_ret = param_save_async_send_next_chunk(ctx);
+
+			if (send_ret < 0) {
+				PX4_ERR("param_save_async_send_next_chunk failed (%d)", send_ret);
+				ctx->pending_result = send_ret;
+				const int ret = rzv_remote_fs_close_async(ctx->fd, param_save_async_close_cb, ctx);
+
+				if (ret < 0) {
+					if (ctx->saving_backup) {
+						PX4_ERR("backup param save close enqueue failed (%d)", ret);
+						param_save_async_finish(ctx, 0, true);
+						return;
+					}
+
+					param_save_async_finish(ctx, ret, true);
+				}
+			}
+
+			return;
+		}
+
+		PX4_DEBUG("param_save_async: all chunks written (%zu bytes, %u calls)",
+			 ctx->total_written, (unsigned)ctx->write_calls);
+	}
+
+	ctx->pending_result = result;
+	const int ret = rzv_remote_fs_close_async(ctx->fd, param_save_async_close_cb, ctx);
+
+	if (ret < 0) {
+		if (ctx->saving_backup) {
+			PX4_ERR("backup param save close enqueue failed (%d)", ret);
+			param_save_async_finish(ctx, 0, true);
+			return;
+		}
+
+		PX4_ERR("param_save_async close enqueue failed (%d)", ret);
+		param_save_async_finish(ctx, ret, true);
+	}
+}
+
+static void param_save_async_close_cb(int32_t request_id,
+				      int32_t return_value,
+				      int32_t errno_value,
+				      void *user_data)
+{
+	auto *ctx = static_cast<ParamSaveAsyncContext *>(user_data);
+
+	if (!ctx) {
+		PX4_ERR("param_save_async_close_cb: NULL context (req_id=%ld)", (long)request_id);
+		return;
+	}
+
+	const hrt_abstime elapsed = hrt_elapsed_time(&ctx->start_time);
+	PX4_DEBUG("param_save_async_close_cb: req_id=%ld ret=%ld errno=%ld elapsed=%llu ms backup=%d",
+		  (long)request_id, (long)return_value, (long)errno_value,
+		  (unsigned long long)(elapsed / 1000), (int)ctx->saving_backup);
+
+	int result = ctx->pending_result;
+
+	if (return_value < 0 && result == 0) {
+		result = (errno_value != 0) ? -errno_value : -EIO;
+		PX4_ERR("param_save_async_close failed: req_id=%ld ret=%ld errno=%ld result=%d",
+			(long)request_id, (long)return_value, (long)errno_value, result);
+	}
+
+	if (ctx->saving_backup) {
+		if (result != 0) {
+			PX4_ERR("backup param save failed (%d)", result);
+		} else {
+			PX4_INFO("backup param save completed successfully");
+		}
+
+		param_save_async_finish(ctx, 0, true);
+		return;
+	}
+
+	if (result != 0) {
+		PX4_ERR("param_save_async failed with result=%d", result);
+		param_save_async_finish(ctx, result, true);
+		return;
+	}
+
+	PX4_DEBUG("param_save_async: file closed successfully (wrote %zu bytes in %u calls)",
+		 ctx->total_written, (unsigned)ctx->write_calls);
+
+	if (ctx->backup_path) {
+		PX4_DEBUG("param_save_async: starting backup save");
+		ctx->saving_backup = true;
+		ctx->pending_result = 0;
+		const int ret = rzv_remote_fs_open_async(ctx->backup_path,
+							 O_WRONLY | O_CREAT | O_TRUNC,
+							 PX4_O_MODE_666,
+							 param_save_async_open_cb,
+							 ctx);
+
+		if (ret < 0) {
+			PX4_ERR("backup param save enqueue failed (%d)", ret);
+			param_save_async_finish(ctx, 0, true);
+		}
+
+		return;
+	}
+
+	param_save_async_finish(ctx, 0, true);
+}
+
+int param_save_default_async(param_save_async_callback_t callback, void *user_data)
+{
+	if (param_save_async_in_progress.exchange(true)) {
+		return -EBUSY;
+	}
+
+	const int shutdown_lock_ret = px4_shutdown_lock();
+
+	if (shutdown_lock_ret != 0) {
+		PX4_ERR("px4_shutdown_lock() failed (%i)", shutdown_lock_ret);
+	}
+
+	const char *filename = param_get_default_file();
+
+	if (!filename) {
+		param_save_async_in_progress.store(false);
+
+		if (shutdown_lock_ret == 0) {
+			px4_shutdown_unlock();
+		}
+
+		return -EINVAL;
+	}
+
+	uint8_t *buffer = nullptr;
+	size_t buffer_len = 0;
+	perf_begin(param_export_perf);
+	const hrt_abstime export_start = hrt_absolute_time();
+	int ret = param_export_to_bson_buffer(&buffer, &buffer_len);
+	const hrt_abstime export_duration = hrt_absolute_time() - export_start;
+	perf_end(param_export_perf);
+
+	if (export_duration > 50_ms) {
+		PX4_WARN("param export took %lu ms (len=%zu)",
+			 (unsigned long)(export_duration / 1000U),
+			 buffer_len);
+	}
+
+	if (ret != 0) {
+		param_save_async_in_progress.store(false);
+
+		if (shutdown_lock_ret == 0) {
+			px4_shutdown_unlock();
+		}
+
+		return ret;
+	}
+
+	auto *ctx = new (std::nothrow) ParamSaveAsyncContext{};
+
+	if (!ctx) {
+		free(buffer);
+		param_save_async_in_progress.store(false);
+
+		if (shutdown_lock_ret == 0) {
+			px4_shutdown_unlock();
+		}
+
+		return -ENOMEM;
+	}
+
+	ctx->callback = callback;
+	ctx->user_data = user_data;
+	ctx->buffer = buffer;
+	ctx->buffer_len = buffer_len;
+	ctx->write_offset = 0;
+	ctx->write_chunk = 0;
+	ctx->total_written = 0;
+	ctx->write_calls = 0;
+	ctx->fd = -1;
+	ctx->shutdown_lock_ret = shutdown_lock_ret;
+	ctx->backup_path = nullptr; // Async path: disable backup to reduce RPC traffic
+	ctx->saving_backup = false;
+	ctx->pending_result = 0;
+	ctx->start_time = hrt_absolute_time();
+
+	ret = rzv_remote_fs_open_async(filename,
+				       O_WRONLY | O_CREAT | O_TRUNC,
+				       PX4_O_MODE_666,
+				       param_save_async_open_cb,
+				       ctx);
+
+	if (ret < 0) {
+		param_save_async_finish(ctx, ret, false);
+		return ret;
+	}
+
+	return 0;
+}
+#endif /* __PX4_FREERTOS */
 
 /**
  * @return 0 on success, 1 if all params have not yet been stored, -1 if device open failed, -2 if writing parameters failed
@@ -1178,10 +1762,22 @@ param_import_callback(bson_decoder_t decoder, bson_node_t node)
 	// Handle setting the parameter from the node
 	switch (node->type) {
 	case BSON_INT32: {
+#if defined(__PX4_FREERTOS)
+			const int32_t i = node->i32;
+
+#endif /* __PX4_FREERTOS */
 			if (param_type(param) == PARAM_TYPE_INT32) {
+#if !defined(__PX4_FREERTOS)
 				int32_t i = node->i32;
+#endif /* __PX4_FREERTOS */
 				param_set_internal(param, &i, true, true);
 				PX4_DEBUG("Imported %s with value %" PRIi32, param_name(param), i);
+#if defined(__PX4_FREERTOS)
+			} else if (param_type(param) == PARAM_TYPE_FLOAT) {
+				const float f = static_cast<float>(i);
+				param_set_internal(param, &f, true, true);
+				PX4_DEBUG("Imported %s with value %.3f (int32->float)", param_name(param), (double)f);
+#endif /* __PX4_FREERTOS */
 
 			} else {
 				PX4_WARN("unexpected type for %s", node->name);
@@ -1190,10 +1786,32 @@ param_import_callback(bson_decoder_t decoder, bson_node_t node)
 		break;
 
 	case BSON_DOUBLE: {
+#if defined(__PX4_FREERTOS)
+			const double d = node->d;
+
+#endif /* __PX4_FREERTOS */
 			if (param_type(param) == PARAM_TYPE_FLOAT) {
+#if defined(__PX4_FREERTOS)
+				float f = static_cast<float>(d);
+#else
 				float f = node->d;
+#endif /* __PX4_FREERTOS */
 				param_set_internal(param, &f, true, true);
 				PX4_DEBUG("Imported %s with value %f", param_name(param), (double)f);
+#if defined(__PX4_FREERTOS)
+			} else if (param_type(param) == PARAM_TYPE_INT32) {
+				int64_t rounded = llround(d);
+
+				if (rounded > INT32_MAX) {
+					rounded = INT32_MAX;
+				} else if (rounded < INT32_MIN) {
+					rounded = INT32_MIN;
+				}
+
+				int32_t i = static_cast<int32_t>(rounded);
+				param_set_internal(param, &i, true, true);
+				PX4_DEBUG("Imported %s with value %" PRIi32 " (double->int32)", param_name(param), i);
+#endif /* __PX4_FREERTOS */
 
 			} else {
 				PX4_WARN("unexpected type for %s", node->name);
@@ -1285,6 +1903,39 @@ param_load(int fd)
 	param_reset_all_internal(false);
 	return param_import_internal(fd);
 }
+
+#if defined(__PX4_FREERTOS)
+int param_load_buf(const void *buf, size_t size)
+{
+	if (!buf || size == 0) {
+		return 1; // no data, treat like "no file"
+	}
+
+	bson_decoder_s decoder{};
+
+	if (bson_decoder_init_buf(&decoder, const_cast<void *>(buf),
+				  static_cast<unsigned>(size), param_import_callback) != 0) {
+		PX4_ERR("param_load_buf: decoder init failed");
+		return -1;
+	}
+
+	int result = -1;
+
+	do {
+		result = bson_decoder_next(&decoder);
+	} while (result > 0);
+
+	if (result == 0) {
+		PX4_INFO("param_load_buf: %" PRId32 " bytes (INT32:%" PRIu16 " FLOAT:%" PRIu16 ")",
+			 decoder.total_decoded_size,
+			 decoder.count_node_int32, decoder.count_node_double);
+		return 0;
+	}
+
+	PX4_ERR("param_load_buf: import failed (%d)", result);
+	return -1;
+}
+#endif /* __PX4_FREERTOS */
 
 void
 param_foreach(void (*func)(void *arg, param_t param), void *arg, bool only_changed, bool only_used)

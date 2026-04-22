@@ -150,6 +150,21 @@ void SendProtocol::update(const hrt_abstime &now)
 	while (_latest_sequence != buffer_sequence) {
 		// only send if enough tx buffer space available
 		if (_mavlink.get_free_tx_buf() < MAVLINK_MSG_ID_EVENT_LEN + MAVLINK_NUM_NON_PAYLOAD_BYTES) {
+#if defined(__PX4_FREERTOS)
+			// [DEBUG] Track TX buffer full events
+			static uint64_t tx_buffer_full_count = 0;
+			static uint64_t last_tx_buffer_warning = 0;
+			tx_buffer_full_count++;
+			uint64_t now_us = hrt_absolute_time();
+			if (now_us - last_tx_buffer_warning > 5000000) {  // Warn every 5 seconds
+				PX4_WARN("[MAVLINK_EVENT] TX buffer full! Dropped %llu events in last 5s (free_buf=%zu, required=%zu)",
+				         (unsigned long long)tx_buffer_full_count,
+				         _mavlink.get_free_tx_buf(),
+				         (size_t)(MAVLINK_MSG_ID_EVENT_LEN + MAVLINK_NUM_NON_PAYLOAD_BYTES));
+				tx_buffer_full_count = 0;
+				last_tx_buffer_warning = now_us;
+			}
+#endif /* __PX4_FREERTOS */
 			break;
 		}
 

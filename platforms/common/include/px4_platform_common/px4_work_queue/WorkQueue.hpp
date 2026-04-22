@@ -43,6 +43,11 @@
 #include <px4_platform_common/sem.h>
 #include <px4_platform_common/tasks.h>
 
+#if defined(__PX4_FREERTOS)
+#include <stdint.h>
+#include <drivers/drv_hrt.h>
+#include <task.h>
+#endif /* __PX4_FREERTOS */
 namespace px4
 {
 
@@ -76,6 +81,11 @@ public:
 	// WorkQueues sorted numerically by relative priority (-1 to -255)
 	bool operator<=(const WorkQueue &rhs) const { return _config.relative_priority >= rhs.get_config().relative_priority; }
 
+#if defined(__PX4_FREERTOS)
+	void set_task_handle(TaskHandle_t handle) { _task_handle = handle; }
+	TaskHandle_t task_handle() const { return _task_handle; }
+	const char *current_work_item_name() const { return _current_work_item_name; }
+#endif /* __PX4_FREERTOS */
 private:
 
 	bool should_exit() const { return _should_exit.load(); }
@@ -101,6 +111,13 @@ private:
 	BlockingList<WorkItem *>	_work_items;
 	px4::atomic_bool		_should_exit{false};
 
+#if defined(__PX4_FREERTOS)
+	bool _stack_warned{false};
+	const char *_current_work_item_name{nullptr};
+	uint32_t _min_stack_bytes_seen{UINT32_MAX};
+	TaskHandle_t _task_handle{nullptr};
+	hrt_abstime _last_stack_sample_time{0};
+#endif /* __PX4_FREERTOS */
 #if defined(ENABLE_LOCKSTEP_SCHEDULER)
 	int _lockstep_component {-1};
 #endif // ENABLE_LOCKSTEP_SCHEDULER

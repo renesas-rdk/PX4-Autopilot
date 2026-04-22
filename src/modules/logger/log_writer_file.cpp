@@ -42,6 +42,9 @@
 #include <px4_platform_common/posix.h>
 #include <px4_platform_common/crypto.h>
 #include <px4_platform_common/log.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/tasks.h>
+#endif /* __PX4_FREERTOS */
 
 #if defined(__PX4_NUTTX)
 # include <malloc.h>
@@ -55,6 +58,20 @@ namespace px4
 {
 namespace logger
 {
+#if defined(__PX4_FREERTOS)
+extern "C" __EXPORT __attribute__((weak)) bool px4_logger_track_io_latency()
+{
+	return false;
+}
+extern "C" __EXPORT __attribute__((weak)) uint64_t px4_logger_slow_write_threshold_us()
+{
+	return 0;
+}
+extern "C" __EXPORT __attribute__((weak)) uint64_t px4_logger_slow_fsync_threshold_us()
+{
+	return 0;
+}
+#endif /* __PX4_FREERTOS */
 constexpr size_t LogWriterFile::_min_write_chunk;
 
 LogWriterFile::LogWriterFile(size_t buffer_size)
@@ -193,10 +210,32 @@ bool LogWriterFile::start_log(LogType type, const char *filename)
 	// At this point we don't expect the file to be open, but it can happen for very fast consecutive stop & start
 	// calls. In that case we wait for the thread to close the file first.
 	lock();
+#if defined(__PX4_FREERTOS)
+	constexpr int kMaxWaitUs = 2000000; // 2 seconds
+	constexpr int kStepUs    = 5000;    // 5 ms per step
+	int waited = 0;
+#endif /* __PX4_FREERTOS */
 
 	while (_buffers[(int)type].fd() >= 0) {
 		unlock();
+#if defined(__PX4_FREERTOS)
+		system_usleep(kStepUs);
+		waited += kStepUs;
+
+		if (waited >= kMaxWaitUs) {
+			PX4_WARN("start_log: timeout waiting for previous log file to close (fd=%d), force-resetting",
+				 _buffers[(int)type].fd());
+			lock();
+			// Writer thread is stuck: force-close and reset so we can start fresh.
+			_buffers[(int)type]._should_run = false;
+			_buffers[(int)type].close_file();
+			_buffers[(int)type].reset();
+			notify();
+			break;
+		}
+#else
 		system_usleep(5000);
+#endif /* __PX4_FREERTOS */
 		lock();
 	}
 
@@ -286,9 +325,16 @@ int LogWriterFile::thread_start()
 	sched_param param;
 	/* low priority, as this is expensive disk I/O */
 	param.sched_priority = SCHED_PRIORITY_DEFAULT - 40;
+#if defined(__PX4_FREERTOS)
+	param.sched_priority = px4_task_adjust_priority(param.sched_priority);
+#endif /* __PX4_FREERTOS */
 	(void)pthread_attr_setschedparam(&thr_attr, &param);
 
+#if defined(__PX4_FREERTOS)
+	pthread_attr_setstacksize(&thr_attr, PX4_STACK_ADJUSTED(4096));
+#else
 	pthread_attr_setstacksize(&thr_attr, PX4_STACK_ADJUSTED(1170));
+#endif /* __PX4_FREERTOS */
 
 	int ret = pthread_create(&_thread, &thr_attr, &LogWriterFile::run_helper, this);
 	pthread_attr_destroy(&thr_attr);
@@ -437,11 +483,21 @@ void LogWriterFile::run()
 					} else {
 						PX4_ERR("write failed (%i)", errno);
 						buffer._had_write_error.store(true);
+#if defined(__PX4_FREERTOS)
+						if (errno == EBADF && buffer.fd() < 0) {
+							buffer.mark_read(available);
+
+						} else
+						{
+#endif /* __PX4_FREERTOS */
 						buffer._should_run = false;
 						pthread_mutex_unlock(&_mtx);
 						buffer.close_file();
 						pthread_mutex_lock(&_mtx);
 						buffer.reset();
+#if defined(__PX4_FREERTOS)
+						}
+#endif /* __PX4_FREERTOS */
 					}
 
 				} else if (call_fsync && buffer._should_run) {
@@ -686,15 +742,48 @@ bool LogWriterFile::LogFileBuffer::start_log(const char *filename)
 void LogWriterFile::LogFileBuffer::fsync() const
 {
 	perf_begin(_perf_fsync);
+#if defined(__PX4_FREERTOS)
+	const bool track_latency = px4_logger_track_io_latency();
+	const hrt_abstime start_time = track_latency ? hrt_absolute_time() : 0;
+#endif /* __PX4_FREERTOS */
 	::fsync(_fd);
 	perf_end(_perf_fsync);
+#if defined(__PX4_FREERTOS)
+	const uint64_t threshold_us = px4_logger_slow_fsync_threshold_us();
+	if (track_latency && (threshold_us > 0)) {
+		const hrt_abstime elapsed_us = hrt_elapsed_time(&start_time);
+
+		if (elapsed_us > threshold_us) {
+		PX4_WARN("logger: slow fsync in %llu ms (threshold=%llu ms)",
+			 (unsigned long long)(elapsed_us / 1000),
+			 (unsigned long long)(threshold_us / 1000));
+		}
+	}
+#endif /* __PX4_FREERTOS */
 }
 
 ssize_t LogWriterFile::LogFileBuffer::write_to_file(const void *buffer, size_t size, bool call_fsync) const
 {
 	perf_begin(_perf_write);
+#if defined(__PX4_FREERTOS)
+	const bool track_latency = px4_logger_track_io_latency();
+	const hrt_abstime start_time = track_latency ? hrt_absolute_time() : 0;
+#endif /* __PX4_FREERTOS */
 	ssize_t ret = ::write(_fd, buffer, size);
 	perf_end(_perf_write);
+#if defined(__PX4_FREERTOS)
+	const uint64_t threshold_us = px4_logger_slow_write_threshold_us();
+
+	if (track_latency && (threshold_us > 0)) {
+		const hrt_abstime elapsed_us = hrt_elapsed_time(&start_time);
+
+		if (elapsed_us > threshold_us) {
+		PX4_WARN("logger: slow write %zu bytes in %llu ms (threshold=%llu ms)",
+			 size, (unsigned long long)(elapsed_us / 1000),
+			 (unsigned long long)(threshold_us / 1000));
+		}
+	}
+#endif /* __PX4_FREERTOS */
 
 	if (call_fsync) {
 		fsync();

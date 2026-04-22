@@ -41,6 +41,9 @@
 #include <px4_platform_common/time.h>
 #include <drivers/drv_hrt.h>
 
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/posix.h>
+#endif /* __PX4_FREERTOS */
 namespace px4
 {
 

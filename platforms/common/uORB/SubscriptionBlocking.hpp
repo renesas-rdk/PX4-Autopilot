@@ -37,6 +37,9 @@
 
 #include <containers/LockGuard.hpp>
 #include <px4_time.h>
+#if defined(__PX4_FREERTOS)
+#include <drivers/drv_hrt.h>
+#endif
 
 namespace uORB
 {
@@ -84,6 +87,33 @@ public:
 			registerCallback();
 		}
 
+#if defined(__PX4_FREERTOS)
+		if (updated()) {
+			return true;
+		}
+
+		constexpr uint32_t sleep_step_us = 1000;
+
+		if (timeout_us == 0) {
+			while (!updated()) {
+				px4_usleep(sleep_step_us);
+			}
+
+			return true;
+		}
+
+		const hrt_abstime deadline = hrt_absolute_time() + timeout_us;
+
+		while (!updated()) {
+			if (hrt_absolute_time() >= deadline) {
+				return updated();
+			}
+
+			px4_usleep(sleep_step_us);
+		}
+
+		return true;
+#else
 		if (updated()) {
 			// return immediately if updated
 			return true;
@@ -118,6 +148,7 @@ public:
 		}
 
 		return false;
+#endif /* __PX4_FREERTOS */
 	}
 
 	/**

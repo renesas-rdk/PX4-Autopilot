@@ -187,12 +187,27 @@ void ManualControl::processSwitches(hrt_abstime &now)
 					}
 
 				} else {
+#if defined(__PX4_FREERTOS)
+					// Arming switch with debounce (COM_RC_ARM_HYST ms ≈ 7 SBUS frames at 100ms default)
+					// Prevents a single noise-corrupted SBUS frame from triggering arm/disarm.
+					const bool prev_arm = _arm_switch_hysteresis.get_state();
+					_arm_switch_hysteresis.set_state_and_update(
+						switches.arm_switch == manual_control_switches_s::SWITCH_POS_ON, now);
+
+					if (_arm_switch_hysteresis.get_state() != prev_arm) {
+						if (_arm_switch_hysteresis.get_state()) {
+#else
 					// Arming switch
 					if (switches.arm_switch != _previous_switches.arm_switch) {
 						if (switches.arm_switch == manual_control_switches_s::SWITCH_POS_ON) {
+#endif /* __PX4_FREERTOS */
 							sendActionRequest(action_request_s::ACTION_ARM, action_request_s::SOURCE_RC_SWITCH);
+#if defined(__PX4_FREERTOS)
+						} else {
+#else
 
 						} else if (switches.arm_switch == manual_control_switches_s::SWITCH_POS_OFF) {
+#endif /* __PX4_FREERTOS */
 							sendActionRequest(action_request_s::ACTION_DISARM, action_request_s::SOURCE_RC_SWITCH);
 						}
 					}
@@ -228,12 +243,29 @@ void ManualControl::processSwitches(hrt_abstime &now)
 					}
 				}
 
+#if defined(__PX4_FREERTOS)
+				{
+					// Kill switch with debounce (COM_RC_ARM_HYST ms, same as arm switch)
+					const bool prev_kill = _kill_switch_hysteresis.get_state();
+					_kill_switch_hysteresis.set_state_and_update(
+						switches.kill_switch == manual_control_switches_s::SWITCH_POS_ON, now);
+#else
 				if (switches.kill_switch != _previous_switches.kill_switch) {
 					if (switches.kill_switch == manual_control_switches_s::SWITCH_POS_ON) {
 						sendActionRequest(action_request_s::ACTION_KILL, action_request_s::SOURCE_RC_SWITCH);
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+					if (_kill_switch_hysteresis.get_state() != prev_kill) {
+						if (_kill_switch_hysteresis.get_state()) {
+							sendActionRequest(action_request_s::ACTION_KILL, action_request_s::SOURCE_RC_SWITCH);
+						} else {
+							sendActionRequest(action_request_s::ACTION_UNKILL, action_request_s::SOURCE_RC_SWITCH);
+						}
+#else
 					} else if (switches.kill_switch == manual_control_switches_s::SWITCH_POS_OFF) {
 						sendActionRequest(action_request_s::ACTION_UNKILL, action_request_s::SOURCE_RC_SWITCH);
+#endif /* __PX4_FREERTOS */
 					}
 				}
 
@@ -307,6 +339,12 @@ void ManualControl::updateParams()
 	_stick_disarm_hysteresis.set_hysteresis_time_from(false, _param_com_rc_arm_hyst.get() * 1_ms);
 	_button_arm_hysteresis.set_hysteresis_time_from(false, _param_com_rc_arm_hyst.get() * 1_ms);
 	_stick_kill_hysteresis.set_hysteresis_time_from(false, _param_man_kill_gest_t.get() * 1_s);
+#if defined(__PX4_FREERTOS)
+	_arm_switch_hysteresis.set_hysteresis_time_from(false, _param_com_rc_arm_hyst.get() * 1_ms);
+	_arm_switch_hysteresis.set_hysteresis_time_from(true,  _param_com_rc_arm_hyst.get() * 1_ms);
+	_kill_switch_hysteresis.set_hysteresis_time_from(false, _param_com_rc_arm_hyst.get() * 1_ms);
+	_kill_switch_hysteresis.set_hysteresis_time_from(true,  _param_com_rc_arm_hyst.get() * 1_ms);
+#endif /* __PX4_FREERTOS */
 
 	_selector.setRcInMode(_param_com_rc_in_mode.get());
 	_selector.setTimeout(_param_com_rc_loss_t.get() * 1_s);

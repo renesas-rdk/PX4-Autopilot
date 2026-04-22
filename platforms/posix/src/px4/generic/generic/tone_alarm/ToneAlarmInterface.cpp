@@ -36,25 +36,52 @@
  */
 
 #include <drivers/drv_tone_alarm.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform/micro_hal.h>
+#endif /* __PX4_FREERTOS */
 #include <px4_platform_common/defines.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/time.h>
+#endif /* __PX4_FREERTOS */
 
 namespace ToneAlarmInterface
 {
 
 void init()
 {
+#if defined(__PX4_FREERTOS)
+#ifdef GPIO_TONE_ALARM_GPIO
+	px4_arch_configgpio(GPIO_TONE_ALARM_GPIO);
+	px4_arch_gpiowrite(GPIO_TONE_ALARM_GPIO, false);
+#endif
+#else
 	// Nothing to be done in simulation.
+#endif /* __PX4_FREERTOS */
 }
 
 hrt_abstime start_note(unsigned frequency)
 {
+#if defined(__PX4_FREERTOS)
+	(void)frequency;
+#ifdef GPIO_TONE_ALARM_GPIO
+	px4_arch_gpiowrite(GPIO_TONE_ALARM_GPIO, true);
+	return hrt_absolute_time();
+#endif // GPIO_TONE_ALARM_GPIO
+#else
 	// Nothing to be done in simulation.
+#endif /* __PX4_FREERTOS */
 	return 0;
 }
 
 void stop_note()
 {
+#if defined(__PX4_FREERTOS)
+#ifdef GPIO_TONE_ALARM_GPIO
+	px4_arch_gpiowrite(GPIO_TONE_ALARM_GPIO, false);
+#endif
+#else
 	// Nothing to be done in simulation.
+#endif /* __PX4_FREERTOS */
 }
 
 } /* namespace ToneAlarmInterface */

@@ -44,7 +44,7 @@
 
 #if defined(CONFIG_SPI)
 
-#ifdef __PX4_LINUX
+#if defined(__PX4_LINUX) || defined(__PX4_FREERTOS)
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -200,6 +200,6 @@ enum spi_mode_e {
 	SPIDEV_MODE2 = 2, /* CPOL=1 CHPHA=0 */
 	SPIDEV_MODE3 = 3  /* CPOL=1 CHPHA=1 */
 };
-#endif // __PX4_LINUX
+#endif // __PX4_LINUX || __PX4_FREERTOS
 
 #endif // CONFIG_SPI

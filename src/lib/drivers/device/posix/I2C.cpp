@@ -44,9 +44,17 @@
 
 #if defined(CONFIG_I2C)
 
+#ifdef __PX4_LINUX || defined(__PX4_FREERTOS)
 #ifdef __PX4_LINUX
 
 #include <linux/i2c.h>
+#elif defined(__PX4_FREERTOS)
+#include <posix_compat/i2c-dev.h>
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
 #include <linux/i2c-dev.h>
 
 #include <px4_platform_common/i2c_spi_buses.h>
@@ -182,6 +190,6 @@ I2C::transfer(const uint8_t *send, const unsigned send_len, uint8_t *recv, const
 
 } // namespace device
 
-#endif // __PX4_LINUX
+#endif // __PX4_LINUX || __PX4_FREERTOS
 
 #endif // CONFIG_I2C

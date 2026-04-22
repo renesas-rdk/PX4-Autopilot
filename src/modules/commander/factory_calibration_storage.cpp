@@ -34,6 +34,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#if defined(__PX4_FREERTOS)
+#include <unistd.h>
+#include <px4_platform_common/posix.h>
+#endif /* __PX4_FREERTOS */
 
 #include <lib/parameters/param.h>
 #include <px4_platform_common/log.h>
@@ -98,7 +102,11 @@ int FactoryCalibrationStorage::open()
 		return 0;
 	}
 
+#if defined(__PX4_FREERTOS)
+	int ret = px4_file_access(CALIBRATION_STORAGE, R_OK | W_OK);
+#else
 	int ret = ::access(CALIBRATION_STORAGE, R_OK | W_OK);
+#endif /* __PX4_FREERTOS */
 
 	if (ret != 0) {
 		return -errno;

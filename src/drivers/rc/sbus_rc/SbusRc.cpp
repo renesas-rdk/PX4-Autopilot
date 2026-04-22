@@ -34,6 +34,9 @@
 #include "SbusRc.hpp"
 
 #include <termios.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/posix.h>
+#endif /* __PX4_FREERTOS */
 
 SbusRc::SbusRc(const char *device) :
 	ModuleParams(nullptr),

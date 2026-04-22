@@ -39,6 +39,9 @@
 
 #include "param.h"
 #include "atomic_transaction.h"
+#if defined(__PX4_FREERTOS)
+#include "io_worker.h"
+#endif /* __PX4_FREERTOS */
 
 using namespace time_literals;
 
@@ -59,7 +62,11 @@ void ParamAutosave::request()
 	//   looks at all unsaved params.
 	hrt_abstime delay = 300_ms;
 
+#if defined(__PX4_FREERTOS)
+	static constexpr const hrt_abstime rate_limit = 300_ms; // rate-limit saving to 300ms
+#else
 	static constexpr const hrt_abstime rate_limit = 2_s; // rate-limit saving to 2 seconds
+#endif /* __PX4_FREERTOS */
 	const hrt_abstime last_save_elapsed = hrt_elapsed_time(&_last_timestamp);
 
 	if (last_save_elapsed < rate_limit && rate_limit > last_save_elapsed + delay) {
@@ -109,22 +116,88 @@ void ParamAutosave::Run()
 		return;
 	}
 
+#if defined(__PX4_FREERTOS)
+	PX4_DEBUG("Autosaving params (async via I/O worker)");
+#else
 	PX4_DEBUG("Autosaving params");
 	int ret = param_save_default(false);
+#endif /* __PX4_FREERTOS */
 
+#if defined(__PX4_FREERTOS)
+	// Use I/O worker for async save (non-blocking!)
+	IOWorker *io_worker = io_worker_get_instance();
+
+	if (io_worker) {
+		// Queue async save with callback for retry handling
+		int ret = io_worker->queue_param_save(
+			[](int result, void *user_data) {
+				ParamAutosave *self = static_cast<ParamAutosave *>(user_data);
+
+				if (result != PX4_OK) {
+					// Retry handled by I/O worker, just log the final failure
+					PX4_ERR("param auto save failed (%i)", result);
+					self->_retry_count = 0;
+
+				} else {
+					// Success
+					self->_retry_count = 0;
+				}
+			},
+			this
+		);
+
+		if (ret != PX4_OK) {
+			// Failed to queue - retry later
+			if (_retry_count < 3) {
+				_retry_count++;
+				PX4_INFO("param auto save queue failed (%i), retrying..", ret);
+				request();
+
+			} else {
+				PX4_ERR("param auto save queue failed (%i)", ret);
+				_retry_count = 0;
+			}
+#else
 	if (ret != PX4_OK) {
 		// re-request to be saved in the future, try 3 times at most
 		if (_retry_count < 3) {
 			_retry_count++;
 			PX4_INFO("param auto save unavailable (%i), retrying..", ret);
 			request();
+#endif /* __PX4_FREERTOS */
 
 		} else {
+#if defined(__PX4_FREERTOS)
+			// Successfully queued (will complete in background)
+#else
 			PX4_ERR("param auto save failed (%i)", ret);
+#endif /* __PX4_FREERTOS */
 			_retry_count = 0;
 		}
 
 	} else {
+#if defined(__PX4_FREERTOS)
+		// Fallback to blocking save if I/O worker not available
+		PX4_WARN("I/O worker not available, using blocking save");
+		int ret = param_save_default(false);
+
+		if (ret != PX4_OK) {
+			// re-request to be saved in the future, try 3 times at most
+			if (_retry_count < 3) {
+				_retry_count++;
+				PX4_INFO("param auto save unavailable (%i), retrying..", ret);
+				request();
+
+			} else {
+				PX4_ERR("param auto save failed (%i)", ret);
+				_retry_count = 0;
+			}
+
+		} else {
+			_retry_count = 0;
+		}
+#else
 		_retry_count = 0;
+#endif /* __PX4_FREERTOS */
 	}
 }

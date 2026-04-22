@@ -59,6 +59,266 @@
 #include <asm/socket.h>
 #endif
 
+#if defined(__PX4_FREERTOS)
+#include <atomic>
+#include <cctype>
+#include <string>
+
+namespace
+{
+static constexpr size_t SHELL_RX_BUFFER_SIZE = 256;
+static constexpr size_t SHELL_TX_BUFFER_SIZE = 1024;
+static constexpr TickType_t SHELL_STREAM_WAIT = pdMS_TO_TICKS(20);
+
+// Accessed from multiple tasks: MAVLink thread (set/clear) and any PX4 logging
+// thread (read via mavlink_shell_stdout_hook). Must be atomic.
+std::atomic<MavlinkShell *> g_active_shell{nullptr};
+}
+
+MavlinkShell::~MavlinkShell()
+{
+	if (g_active_shell == this) {
+		g_active_shell = nullptr;
+	}
+
+	_should_exit.store(true);
+
+	if (_rx_stream != nullptr) {
+		const uint8_t wake = '\n';
+		(void)xStreamBufferSend(_rx_stream, &wake, sizeof(wake), SHELL_STREAM_WAIT);
+	}
+
+	if (_task >= 0) {
+		px4_task_delete(_task);
+		_task = -1;
+	}
+
+	if (_tx_mutex != nullptr) {
+		vSemaphoreDelete(_tx_mutex);
+		_tx_mutex = nullptr;
+	}
+
+	if (_rx_stream != nullptr) {
+		vStreamBufferDelete(_rx_stream);
+		_rx_stream = nullptr;
+	}
+
+	if (_tx_stream != nullptr) {
+		vStreamBufferDelete(_tx_stream);
+		_tx_stream = nullptr;
+	}
+}
+
+int MavlinkShell::start()
+{
+	if (_task >= 0) {
+		return 0;
+	}
+
+	_rx_stream = xStreamBufferCreate(SHELL_RX_BUFFER_SIZE, 1);
+	_tx_stream = xStreamBufferCreate(SHELL_TX_BUFFER_SIZE, 1);
+	_tx_mutex = xSemaphoreCreateMutex();
+
+	if ((_rx_stream == nullptr) || (_tx_stream == nullptr) || (_tx_mutex == nullptr)) {
+		if (_tx_mutex != nullptr) {
+			vSemaphoreDelete(_tx_mutex);
+			_tx_mutex = nullptr;
+		}
+
+		if (_rx_stream != nullptr) {
+			vStreamBufferDelete(_rx_stream);
+			_rx_stream = nullptr;
+		}
+
+		if (_tx_stream != nullptr) {
+			vStreamBufferDelete(_tx_stream);
+			_tx_stream = nullptr;
+		}
+
+		errno = ENOMEM;
+		return -ENOMEM;
+	}
+
+	_should_exit.store(false);
+	g_active_shell = this;
+
+	// 8192 bytes: Pxh::process_line() can call PX4 module commands with deep stacks
+	// (e.g. param set, logger, ekf2 status). 3072 was too small for some commands.
+	_task = px4_task_spawn_cmd("mavlink_shell",
+			   SCHED_DEFAULT,
+			   SCHED_PRIORITY_DEFAULT,
+			   8192,
+			   &MavlinkShell::shell_start_thread,
+			   nullptr);
+
+	if (_task < 0) {
+		g_active_shell = nullptr;
+		vSemaphoreDelete(_tx_mutex);
+		_tx_mutex = nullptr;
+		vStreamBufferDelete(_rx_stream);
+		_rx_stream = nullptr;
+		vStreamBufferDelete(_tx_stream);
+		_tx_stream = nullptr;
+		return -errno;
+	}
+
+	append_prompt();
+
+	return 0;
+}
+
+size_t MavlinkShell::write(uint8_t *buffer, size_t len)
+{
+	if ((buffer == nullptr) || (len == 0) || (_rx_stream == nullptr)) {
+		return 0;
+	}
+
+	size_t total_sent = 0;
+
+	while (total_sent < len) {
+		const size_t sent = xStreamBufferSend(_rx_stream,
+						      buffer + total_sent,
+						      len - total_sent,
+						      SHELL_STREAM_WAIT);
+
+		if (sent == 0) {
+			break;
+		}
+
+		total_sent += sent;
+	}
+
+	return total_sent;
+}
+
+size_t MavlinkShell::read(uint8_t *buffer, size_t len)
+{
+	if ((buffer == nullptr) || (len == 0) || (_tx_stream == nullptr)) {
+		return 0;
+	}
+
+	return xStreamBufferReceive(_tx_stream, buffer, len, 0);
+}
+
+size_t MavlinkShell::available()
+{
+	if (_tx_stream == nullptr) {
+		return 0;
+	}
+
+	return xStreamBufferBytesAvailable(_tx_stream);
+}
+
+void MavlinkShell::append_output(const char *buffer, size_t len)
+{
+	if ((buffer == nullptr) || (len == 0) || (_tx_stream == nullptr) || (_tx_mutex == nullptr)) {
+		return;
+	}
+
+	if (xSemaphoreTake(_tx_mutex, SHELL_STREAM_WAIT) == pdTRUE) {
+		xStreamBufferSend(_tx_stream, buffer, len, SHELL_STREAM_WAIT);
+		xSemaphoreGive(_tx_mutex);
+	}
+}
+
+void MavlinkShell::append_prompt()
+{
+	static constexpr const char prompt[] = "pxh> ";
+	append_output(prompt, sizeof(prompt) - 1);
+}
+
+void MavlinkShell::shell_thread_main()
+{
+	std::string line;
+	line.reserve(128);
+	bool last_was_cr = false;
+
+	while (!_should_exit.load()) {
+		uint8_t ch = 0;
+		const size_t received = xStreamBufferReceive(_rx_stream, &ch, sizeof(ch), portMAX_DELAY);
+
+		if (received == 0) {
+			continue;
+		}
+
+		if (ch == '\r' || ch == '\n') {
+			if (!(ch == '\n' && last_was_cr)) {
+				append_output("\r\n", 2);
+			}
+
+			last_was_cr = (ch == '\r');
+
+			if (!line.empty()) {
+				px4_daemon::Pxh::process_line(line, false);
+				line.clear();
+			}
+
+			append_prompt();
+			continue;
+		}
+
+		last_was_cr = false;
+
+		if (ch == 0x03) { // CTRL+C
+			line.clear();
+			append_output("^C\r\n", 4);
+			append_prompt();
+			continue;
+		}
+
+		if (ch == '\b' || ch == 0x7f) {
+			if (!line.empty()) {
+				line.pop_back();
+				append_output("\b \b", 3);
+			}
+
+			continue;
+		}
+
+		if (std::isprint(ch) != 0) {
+			line.push_back(static_cast<char>(ch));
+			const char echo = static_cast<char>(ch);
+			append_output(&echo, 1);
+		}
+	}
+
+	if (g_active_shell == this) {
+		g_active_shell = nullptr;
+	}
+}
+
+int MavlinkShell::shell_start_thread(int argc, char *argv[])
+{
+	(void)argc;
+	(void)argv;
+
+	MavlinkShell *shell = g_active_shell.load();
+
+	if (shell != nullptr) {
+		shell->shell_thread_main();
+	}
+
+	return 0;
+}
+
+extern "C" void mavlink_shell_stdout_hook(const char *buffer, size_t len)
+{
+	// Load atomically once; safe to call ->append_output() if pointer is non-null
+	// since the shell is destroyed only after _should_exit is set and the task joined.
+	MavlinkShell *shell = g_active_shell.load();
+
+	if ((shell != nullptr) && (buffer != nullptr) && (len > 0)) {
+		shell->append_output(buffer, len);
+	}
+}
+
+extern "C" bool mavlink_shell_stdout_active(void)
+{
+	return g_active_shell.load() != nullptr;
+}
+
+#else /* !__PX4_FREERTOS */
+
 MavlinkShell::~MavlinkShell()
 {
 	//closing the pipes will stop the thread as well
@@ -232,3 +492,4 @@ size_t MavlinkShell::available()
 
 	return 0;
 }
+#endif /* __PX4_FREERTOS */

@@ -33,6 +33,9 @@
 
 #include "sdcardCheck.hpp"
 #include <dirent.h>
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#endif /* __PX4_FREERTOS */
 #include <string.h>
 
 #ifdef __PX4_DARWIN
@@ -47,15 +50,32 @@ void SdCardChecks::checkAndReport(const Context &context, Report &reporter)
 #ifdef PX4_STORAGEDIR
 
 	if (_param_com_arm_sdcard.get() > 0) {
+#if defined(__PX4_FREERTOS)
+		bool statfs_supported = true;
+#endif /* __PX4_FREERTOS */
 
 		struct statfs statfs_buf;
 
+#if defined(__PX4_FREERTOS)
+		if (!_sdcard_detected) {
+			if (statfs(PX4_STORAGEDIR, &statfs_buf) == 0) {
+				_sdcard_detected = (statfs_buf.f_blocks > 0) && (statfs_buf.f_bsize > 0);
+
+			} else if ((errno == ENOSYS) || (errno == ENOTSUP)) {
+				statfs_supported = false;
+			}
+#else
 		if (!_sdcard_detected && statfs(PX4_STORAGEDIR, &statfs_buf) == 0) {
 			// on NuttX we get a data block count f_blocks and byte count per block f_bsize if an SD card is inserted
 			_sdcard_detected = (statfs_buf.f_blocks > 0) && (statfs_buf.f_bsize > 0);
+#endif /* __PX4_FREERTOS */
 		}
 
+#if defined(__PX4_FREERTOS)
+		if (statfs_supported && !_sdcard_detected) {
+#else
 		if (!_sdcard_detected) {
+#endif /* __PX4_FREERTOS */
 			NavModes affected_modes{NavModes::None};
 
 			if (_param_com_arm_sdcard.get() == 2) {

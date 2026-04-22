@@ -39,7 +39,9 @@
 
 #include <px4_platform_common/defines.h>
 #include <px4_platform_common/workqueue.h>
+#if !defined(__PX4_FREERTOS)
 #include <px4_platform_common/defines.h>
+#endif /* __PX4_FREERTOS */
 #include <px4_platform_common/time.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -52,11 +54,19 @@
 #include <pthread.h>
 #include <px4_platform_common/init.h>
 
+#if defined(__PX4_FREERTOS)
+#include "FreeRTOS.h"
+#endif /* __PX4_FREERTOS */
+
 extern pthread_t _shell_task_id;
 
 __BEGIN_DECLS
 
+#if defined(__PX4_FREERTOS)
+long PX4_TICKS_PER_SEC = configTICK_RATE_HZ;
+#else
 long PX4_TICKS_PER_SEC = sysconf(_SC_CLK_TCK);
+#endif /* __PX4_FREERTOS */
 
 __END_DECLS
 
@@ -97,3 +107,39 @@ void init(int argc, char *argv[], const char *app_name)
 }
 
 }
+#if defined(__PX4_FREERTOS)
+__attribute__((weak)) int pthread_attr_setinheritsched(pthread_attr_t *, int)
+{
+	return 0;
+}
+
+__attribute__((weak)) int pthread_attr_setschedpolicy(pthread_attr_t *, int)
+{
+	return 0;
+}
+
+__attribute__((weak)) int pthread_cancel(pthread_t)
+{
+	return 0;
+}
+
+__attribute__((weak)) int pthread_setcancelstate(int, int *)
+{
+	return 0;
+}
+
+__attribute__((weak)) int pthread_setcanceltype(int, int *)
+{
+	return 0;
+}
+
+__attribute__((weak)) int pthread_kill(pthread_t, int)
+{
+	return 0;
+}
+
+__attribute__((weak)) long sysconf(int)
+{
+	return 4096;
+}
+#endif /* __PX4_FREERTOS */

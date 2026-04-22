@@ -42,12 +42,18 @@
 #include <px4_platform_common/workqueue.h>
 #include <px4_platform_common/tasks.h>
 #include <px4_platform_common/posix.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/sem.h>
 
+#else
 #include <signal.h>
+#endif /* __PX4_FREERTOS */
 #include <stdint.h>
 #include <queue.h>
 #include <stdio.h>
+#if !defined(__PX4_FREERTOS)
 #include <semaphore.h>
+#endif /* __PX4_FREERTOS */
 #include "work_lock.h"
 
 #ifdef CONFIG_SCHED_WORKQUEUE
@@ -126,7 +132,11 @@ int work_queue(int qid, struct work_s *work, worker_t worker, void *arg, uint32_
 	work->qtime  = clock_systimer(); /* Time work queued */
 
 	dq_addlast((dq_entry_t *)work, &wqueue->q);
+#if defined(__PX4_FREERTOS)
+	px4_sem_post(&wqueue->wait_sem);      /* Wake up the worker thread */
+#else
 	px4_task_kill(wqueue->pid, SIGCONT);      /* Wake up the worker thread */
+#endif /* __PX4_FREERTOS */
 
 	work_unlock(qid);
 	return PX4_OK;

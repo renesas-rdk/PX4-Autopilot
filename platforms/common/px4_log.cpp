@@ -42,6 +42,9 @@
 
 #include <px4_platform_common/log.h>
 #include <px4_platform_common/log_history.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/sem.h>
+#endif /* __PX4_FREERTOS */
 #if defined(__PX4_POSIX)
 #include <px4_daemon/server_io.h>
 #endif
@@ -82,6 +85,13 @@ __EXPORT void px4_log_modulename(int level, const char *module_name, const char 
 	static constexpr ssize_t max_length = sizeof(log_message_s::text);
 
 	FILE *out = stdout;
+#if defined(__PX4_FREERTOS)
+	const bool in_isr = px4_in_isr();
+	if (in_isr) {
+		// Avoid logging (and uORB publishing) from ISR context on FreeRTOS.
+		return;
+	}
+#endif /* __PX4_FREERTOS */
 
 #if defined(PX4_LOG_COLORIZED_OUTPUT)
 	bool use_color = true;
@@ -89,7 +99,14 @@ __EXPORT void px4_log_modulename(int level, const char *module_name, const char 
 
 #if defined(__PX4_POSIX)
 	bool isatty_ = false;
+
+#if defined(__PX4_FREERTOS)
+	if (!in_isr) {
+		out = get_stdout(&isatty_);
+	}
+#else
 	out = get_stdout(&isatty_);
+#endif /* __PX4_FREERTOS */
 
 #if defined(PX4_LOG_COLORIZED_OUTPUT)
 	use_color = isatty_;
@@ -178,7 +195,11 @@ __EXPORT void px4_log_modulename(int level, const char *module_name, const char 
 	}
 
 	/* publish an orb log message */
+#if defined(__PX4_FREERTOS)
+	if ((level >= _PX4_LOG_LEVEL_INFO) && orb_log_message_pub && !in_isr) { // publish outside ISR only
+#else
 	if (level >= _PX4_LOG_LEVEL_INFO && orb_log_message_pub) { //publish all messages
+#endif /* __PX4_FREERTOS */
 
 		log_message_s log_message;
 
@@ -206,10 +227,23 @@ __EXPORT void px4_log_modulename(int level, const char *module_name, const char 
 __EXPORT void px4_log_raw(int level, const char *fmt, ...)
 {
 	FILE *out = stdout;
+#if defined(__PX4_FREERTOS)
+	const bool in_isr = px4_in_isr();
+
+	if (in_isr) {
+		return;
+	}
+#endif /* __PX4_FREERTOS */
 
 #ifdef __PX4_POSIX
 	bool use_color = true;
+#if defined(__PX4_FREERTOS)
+	if (!in_isr) {
+		out = get_stdout(&use_color);
+	}
+#else
 	out = get_stdout(&use_color);
+#endif /* __PX4_FREERTOS */
 #endif
 
 	if (level >= _PX4_LOG_LEVEL_INFO) {

@@ -643,7 +643,16 @@ int I2CSPIDriverBase::module_start(const BusCLIArguments &cli, BusInstanceIterat
 		// initialize the object and bus on the work queue thread - this will also probe for the device
 		px4::WorkItemSingleShot initializer(wq_config, initializer_trampoline, &initializer_data);
 		initializer.ScheduleNow();
+#if defined(__PX4_FREERTOS)
+		// on FreeRTOS we need a timeout, in case the bus is wedged
+		constexpr uint32_t kInitTimeoutMs = 500;
+		if (!initializer.wait_for(kInitTimeoutMs)) {
+			PX4_ERR("%s init timed out on bus %d", driver_config.module_name, iterator.bus());
+			continue;
+		}
+#else
 		initializer.wait();
+#endif /* __PX4_FREERTOS */
 		I2CSPIDriverBase *instance = initializer_data.instance;
 
 		if (!instance) {

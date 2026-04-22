@@ -91,6 +91,10 @@ static constexpr wq_config_t ttyUnknown{"wq:ttyUnknown", 1728, -32};
 
 static constexpr wq_config_t lp_default{"wq:lp_default", 3500, -50};
 
+#if defined(__PX4_FREERTOS)
+static constexpr wq_config_t mag_bias{"wq:mag_bias", 8000, -35};
+#endif // __PX4_FREERTOS
+
 static constexpr wq_config_t test1{"wq:test1", 2000, 0};
 static constexpr wq_config_t test2{"wq:test2", 2000, 0};
 

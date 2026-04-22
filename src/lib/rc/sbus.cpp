@@ -39,9 +39,16 @@
 
 #include <px4_platform_common/px4_config.h>
 
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#endif /* __PX4_FREERTOS */
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#if defined(__PX4_FREERTOS)
+#include <px4_platform_common/posix.h>
+#include "uart_rc_switch.h"
+#endif /* __PX4_FREERTOS */
 
 #ifdef TIOCSSINGLEWIRE
 #include <sys/ioctl.h>
@@ -154,6 +161,21 @@ sbus_init(const char *device, bool singlewire)
 int
 sbus_config(int sbus_fd, bool singlewire)
 {
+#if defined(__PX4_FREERTOS)
+    (void)sbus_fd;
+    (void)singlewire;
+
+	uart_set_rc_serial_mode(false);
+
+	if (uart_reopen_rc_channel(100000) != 0) {
+		errno = EIO;
+		return -1;
+	}
+
+	uart_rc_buffer_flush(0);
+	errno = 0;
+	return 0;
+#else
 	int ret = -1;
 
 #if defined(__PX4_LINUX)
@@ -217,6 +239,7 @@ sbus_config(int sbus_fd, bool singlewire)
 	sbus_frame_drops = 0;
 
 	return ret;
+#endif /* __PX4_FREERTOS */
 }
 
 void
@@ -322,6 +345,14 @@ bool
 sbus_parse(uint64_t now, uint8_t *frame, unsigned len, uint16_t *values,
 	   uint16_t *num_values, bool *sbus_failsafe, bool *sbus_frame_drop, unsigned *frame_drops, uint16_t max_channels)
 {
+#if defined(__PX4_FREERTOS)
+	if (now - last_rx_time > 4_ms) {
+		if (partial_frame_count > 0) {
+			partial_frame_count = 0;
+			sbus_decode_state = SBUS2_DECODE_STATE_DESYNC;
+		}
+	}
+#endif /* __PX4_FREERTOS */
 
 	last_rx_time = now;
 
