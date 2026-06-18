@@ -587,10 +587,25 @@ transition_result_t Commander::arm(arm_disarm_reason_t calling_reason, bool run_
 				return TRANSITION_DENIED;
 			}
 
+#if defined(__PX4_FREERTOS)
+		} else if ((calling_reason == arm_disarm_reason_t::stick_gesture
+			    || calling_reason == arm_disarm_reason_t::rc_switch
+			    || calling_reason == arm_disarm_reason_t::rc_button)
+			   && !(_param_com_force_of_arm.get()
+				&& _bench_arm_permit
+				&& hrt_elapsed_time(&_bench_arm_permit_us) < 2_s
+				&& _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_OFFBOARD)) {
+
+			// DEMO BENCH bypass: allow RC arming straight into OFFBOARD ONLY when the airframe opts
+			// in (COM_FORCE_OF_ARM=1) AND a fresh runtime permit is present. The permit is a heartbeat
+			// (MAV_CMD_USER_1, param1=1) the offboard controller forwards from the custom-QGC
+			// force_offboard toggle; it goes stale in 2 s, so a lost link/QGC re-denies RC arming.
+			// Props-removed headball rig only. canArm() below still runs; RC kill still wins.
+#else
 		} else if (calling_reason == arm_disarm_reason_t::stick_gesture
 			   || calling_reason == arm_disarm_reason_t::rc_switch
 			   || calling_reason == arm_disarm_reason_t::rc_button) {
-
+#endif /* __PX4_FREERTOS */
 			mavlink_log_critical(&_mavlink_log_pub, "Arming denied: switch to manual mode first\t");
 			events::send(events::ID("commander_arm_denied_not_manual"), {events::Log::Critical, events::LogInternal::Info},
 				     "Arming denied: switch to manual mode first");
@@ -730,6 +745,13 @@ Commander::~Commander()
 	perf_free(_preflight_check_perf);
 }
 
+#if defined(__PX4_FREERTOS)
+// MAV_CMD_USER_1 — reserved by MAVLink for user/integrator use. Repurposed here as the RZ/V demo
+// bench-arm runtime permit so no new (hash-bridged) uORB topic or px4_msgs change is needed: the
+// offboard controller publishes it on the already-bridged /fmu/in/vehicle_command at ~2 Hz.
+static constexpr uint32_t kRzvBenchArmPermitCmd = 31010;
+#endif /* __PX4_FREERTOS */
+
 bool
 Commander::handle_command(const vehicle_command_s &cmd)
 {
@@ -744,6 +766,18 @@ Commander::handle_command(const vehicle_command_s &cmd)
 
 	/* request to set different system mode */
 	switch (cmd.command) {
+#if defined(__PX4_FREERTOS)
+	case kRzvBenchArmPermitCmd: {
+			// RZ/V demo bench-arm runtime permit (MAV_CMD_USER_1). param1 != 0 = permit the
+			// COM_FORCE_OF_ARM RC-into-OFFBOARD bypass; the timestamp drives a 2 s freshness gate so a
+			// stale/absent heartbeat fails closed (see arm gate). No motion/mode side-effects.
+			_bench_arm_permit    = (cmd.param1 > 0.5f);
+			_bench_arm_permit_us = hrt_absolute_time();
+			cmd_result = vehicle_command_ack_s::VEHICLE_CMD_RESULT_ACCEPTED;
+		}
+		break;
+#endif /* __PX4_FREERTOS */
+
 	case vehicle_command_s::VEHICLE_CMD_DO_REPOSITION: {
 
 			// Just switch the flight mode here, the navigator takes care of
@@ -1259,8 +1293,10 @@ Commander::handle_command(const vehicle_command_s &cmd)
 				px4_usleep(5000000);        // safety wait while reboot propagates
 
 				while (1) { px4_usleep(1); }
+#endif /* __PX4_FREERTOS */
 
 #if defined(CONFIG_BOARDCTL_RESET)
+
 			} else if ((param1 == 1) && !isArmed() && (px4_reboot_request(REBOOT_REQUEST, 400_ms) == 0)) {
 				// 1: Reboot autopilot
 				answer_command(cmd, vehicle_command_ack_s::VEHICLE_CMD_RESULT_ACCEPTED);
@@ -1268,7 +1304,6 @@ Commander::handle_command(const vehicle_command_s &cmd)
 				while (1) { px4_usleep(1); }
 
 #endif // CONFIG_BOARDCTL_RESET
-#endif /* __PX4_FREERTOS */
 
 #if defined(BOARD_HAS_POWER_CONTROL)
 

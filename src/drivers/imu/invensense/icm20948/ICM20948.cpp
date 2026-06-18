@@ -584,9 +584,6 @@ bool ICM20948::FIFORead(const hrt_abstime &timestamp_sample, uint8_t samples)
 	SelectRegisterBank(REG_BANK_SEL_BIT::USER_BANK_0);
 
 	FIFOTransferBuffer buffer{};
-#if defined(__PX4_FREERTOS)
-	buffer.cmd = static_cast<uint8_t>(Register::BANK_0::FIFO_COUNTH) | DIR_READ;
-#endif /* __PX4_FREERTOS */
 	const size_t transfer_size = math::min(samples * sizeof(FIFO::DATA) + 3, FIFO::SIZE);
 
 	if (transfer((uint8_t *)&buffer, (uint8_t *)&buffer, transfer_size) != PX4_OK) {

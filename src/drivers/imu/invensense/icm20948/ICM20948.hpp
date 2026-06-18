@@ -72,26 +72,14 @@ private:
 	void exit_and_cleanup() override;
 
 	// Sensor Configuration
-#if defined(__PX4_FREERTOS)
-	static constexpr float FIFO_SAMPLE_DT{1e6f / 1125.f};
-#else
 	static constexpr float FIFO_SAMPLE_DT{1e6f / 9000.f};
-#endif /* __PX4_FREERTOS */
 	static constexpr int32_t SAMPLES_PER_TRANSFER{2};                    // ensure at least 1 new accel sample per transfer
-#if defined(__PX4_FREERTOS)
-	static constexpr float GYRO_RATE{1e6f / FIFO_SAMPLE_DT};             // 1125 Hz gyro (FreeRTOS) / 9000 Hz (other)
-	static constexpr float ACCEL_RATE{GYRO_RATE / SAMPLES_PER_TRANSFER}; // 562 Hz accel (FreeRTOS) / 4500 Hz (other)
-#else
 	static constexpr float GYRO_RATE{1e6f / FIFO_SAMPLE_DT};             // 9000 Hz gyro
 	static constexpr float ACCEL_RATE{GYRO_RATE / SAMPLES_PER_TRANSFER}; // 4500 Hz accel
-#endif /* __PX4_FREERTOS */
 
 	// maximum FIFO samples per transfer is limited to the size of sensor_accel_fifo/sensor_gyro_fifo
 	static constexpr int32_t FIFO_MAX_SAMPLES{math::min(FIFO::SIZE / sizeof(FIFO::DATA), sizeof(sensor_gyro_fifo_s::x) / sizeof(sensor_gyro_fifo_s::x[0]), sizeof(sensor_accel_fifo_s::x) / sizeof(sensor_accel_fifo_s::x[0]) * (int)(GYRO_RATE / ACCEL_RATE))};
 
-#if defined(__PX4_FREERTOS)
-public:
-#endif
 	// Transfer data
 	struct FIFOTransferBuffer {
 		uint8_t cmd{static_cast<uint8_t>(Register::BANK_0::FIFO_COUNTH) | DIR_READ};
@@ -101,9 +89,6 @@ public:
 	};
 	// ensure no struct padding
 	static_assert(sizeof(FIFOTransferBuffer) == (3 + FIFO_MAX_SAMPLES *sizeof(FIFO::DATA)));
-#if defined(__PX4_FREERTOS)
-private:
-#endif
 
 	struct register_bank0_config_t {
 		Register::BANK_0 reg;
@@ -211,25 +196,11 @@ private:
 	};
 
 	uint8_t _checked_register_bank2{0};
-#if defined(__PX4_FREERTOS)
-	// FreeRTOS: add GYRO_SMPLRT_DIV entry to limit ODR to 1125 Hz when DLPF enabled
-	static constexpr uint8_t size_register_bank2_cfg{3};
-#else
 	static constexpr uint8_t size_register_bank2_cfg{2};
-#endif /* __PX4_FREERTOS */
 	register_bank2_config_t _register_bank2_cfg[size_register_bank2_cfg] {
 		// Register                             | Set bits, Clear bits
-#if defined(__PX4_FREERTOS)
-		// FreeRTOS: GYRO_SMPLRT_DIV=0 → ODR = 1125 Hz when DLPF enabled
-		{ Register::BANK_2::GYRO_SMPLRT_DIV,   0, 0xFF },
-		// FreeRTOS: enable gyro DLPF, ~51.2 Hz BW (DLPFCFG[2:0]=011)
-		{ Register::BANK_2::GYRO_CONFIG_1,      GYRO_CONFIG_1_BIT::GYRO_FS_SEL_2000_DPS | GYRO_CONFIG_1_BIT::GYRO_FCHOICE | GYRO_CONFIG_1_BIT::GYRO_DLPFCFG_51HZ, GYRO_CONFIG_1_BIT::GYRO_DLPFCFG & ~GYRO_CONFIG_1_BIT::GYRO_DLPFCFG_51HZ },
-		// FreeRTOS: enable accel DLPF, ~23.9 Hz BW (DLPFCFG[2:0]=011)
-		{ Register::BANK_2::ACCEL_CONFIG,       ACCEL_CONFIG_BIT::ACCEL_FS_SEL_16G | ACCEL_CONFIG_BIT::ACCEL_FCHOICE | ACCEL_CONFIG_BIT::ACCEL_DLPFCFG_24HZ, ACCEL_CONFIG_BIT::ACCEL_DLPFCFG & ~ACCEL_CONFIG_BIT::ACCEL_DLPFCFG_24HZ },
-#else
 		{ Register::BANK_2::GYRO_CONFIG_1,      GYRO_CONFIG_1_BIT::GYRO_FS_SEL_2000_DPS, GYRO_CONFIG_1_BIT::GYRO_FCHOICE },
 		{ Register::BANK_2::ACCEL_CONFIG,       ACCEL_CONFIG_BIT::ACCEL_FS_SEL_16G, ACCEL_CONFIG_BIT::ACCEL_FCHOICE },
-#endif /* __PX4_FREERTOS */
 	};
 
 	uint8_t _checked_register_bank3{0};

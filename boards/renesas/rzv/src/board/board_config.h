@@ -31,6 +31,18 @@
 #define PX4_NUMBER_I2C_BUSES    1
 #define PX4_NUMBER_SPI_BUSES    2
 
+// RZV chip-select convention for the SPIBusIterator '-c' CLI filter
+// (platforms/common/spi.cpp matches `chipselect == (cs_gpio & GPIO_PIN_MASK)`).
+//
+// On this board `px4_spi_bus_device_t::cs_gpio` is NOT a real GPIO pinset: the
+// SSL lines are driven by the FSP SPI peripheral itself, never by software GPIO.
+// Instead cs_gpio carries a LOGICAL chip-select index 1..4; the physical SSL
+// line is (cs_gpio - 1), selected per transfer by the FSP backend
+// (spi_fsp_backend.c). cs_gpio == 0 means "no CS routing" (legacy single-device
+// semantics). GPIO_PIN_MASK must cover the full index range so the '-c' filter
+// in platforms/common/spi.cpp sees the index unmasked.
+#define GPIO_PIN_MASK 0xFF
+
 // GPIO placeholders alias the generated FSP pin symbols to avoid duplicating pin numbers here.
 // Keep the software names stable while the final electrical polarity is verified on hardware.
 #define RZV_GPIO_SAFETY_BTN_PLACEHOLDER   GPS_SAFETY_SWITCH
@@ -46,7 +58,10 @@
 #define GPIO_TONE_ALARM_IDLE              RZV_GPIO_BUZZER_PLACEHOLDER
 
 // Sensor device addresses (handled by the FreeRTOS+FSP shim)
-#define PX4_I2C_OBDEV_BMP280    0x76
+#define PX4_I2C_OBDEV_BMP280    0x76  // retired from runtime (rcS); kept for bench builds
+#define PX4_I2C_OBDEV_ICP201XX  0x63
+#define PX4_I2C_OBDEV_BMP388    0x76  // 0x77 if SDO=VDD; never start together with BMP280 on the same address
+#define PX4_I2C_OBDEV_BMM150    0x10
 
 #define ADC_BATTERY_VOLTAGE_CHANNEL    -1
 #define ADC_BATTERY_CURRENT_CHANNEL    -1

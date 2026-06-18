@@ -297,15 +297,32 @@ struct SendTopicsSubs {
 	uint32_t num_payload_sent{};
 
 	void init();
+	void reinit_failed_subs();
 	void update(uxrSession *session, uxrStreamId reliable_out_stream_id, uxrStreamId best_effort_stream_id, uxrObjectId participant_id, const char *client_namespace);
 	void reset();
 };
 
 void SendTopicsSubs::init() {
 	for (unsigned idx = 0; idx < sizeof(send_subscriptions)/sizeof(send_subscriptions[0]); ++idx) {
-		fds[idx].fd = orb_subscribe(send_subscriptions[idx].orb_meta);
-		fds[idx].events = POLLIN;
-		orb_set_interval(fds[idx].fd, UXRCE_DEFAULT_POLL_RATE);
+		if (fds[idx].events == 0) {
+			fds[idx].fd = orb_subscribe(send_subscriptions[idx].orb_meta);
+			if (fds[idx].fd >= 0) {
+				fds[idx].events = POLLIN;
+				orb_set_interval(fds[idx].fd, UXRCE_DEFAULT_POLL_RATE);
+			}
+		}
+	}
+}
+
+void SendTopicsSubs::reinit_failed_subs() {
+	for (unsigned idx = 0; idx < sizeof(send_subscriptions)/sizeof(send_subscriptions[0]); ++idx) {
+		if (fds[idx].events == 0) {
+			fds[idx].fd = orb_subscribe(send_subscriptions[idx].orb_meta);
+			if (fds[idx].fd >= 0) {
+				fds[idx].events = POLLIN;
+				orb_set_interval(fds[idx].fd, UXRCE_DEFAULT_POLL_RATE);
+			}
+		}
 	}
 }
 

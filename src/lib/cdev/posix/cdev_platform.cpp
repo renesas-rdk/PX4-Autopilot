@@ -1050,35 +1050,29 @@ extern "C" {
 #if defined(__PX4_FREERTOS)
 	off_t px4_lseek(int fd, off_t offset, int whence)
 	{
-	#if defined(__PX4_FREERTOS)
 		if (px4_rzv_remote_handles_fd(fd)) {
 			return px4_rzv_remote_lseek(fd, offset, whence);
 		}
-	#endif
 		errno = ENOSYS;
 		return -1;
 	}
 
 	int px4_fsync(int fd)
 	{
-	#if defined(__PX4_FREERTOS)
 		if (px4_rzv_remote_handles_fd(fd)) {
 			return px4_rzv_remote_fsync(fd);
 		}
-	#endif
 		return 0;
 	}
 
 	int px4_unlink(const char *pathname)
 	{
-	#if defined(__PX4_FREERTOS)
 		int ret = px4_rzv_remote_unlink(pathname);
 
 		if (ret == 0 || errno != ENOSYS) {
 			return ret;
 		}
 		errno = 0;
-	#endif
 		errno = ENOSYS;
 		return -1;
 	}

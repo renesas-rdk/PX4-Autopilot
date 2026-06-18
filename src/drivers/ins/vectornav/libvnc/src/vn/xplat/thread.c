@@ -8,9 +8,6 @@
 	#include <stddef.h>
 	#include <pthread.h>
 	#include <sched.h>
-#if defined(__PX4_FREERTOS)
-#include <px4_platform_common/tasks.h>
-#endif /* __PX4_FREERTOS */
 #endif
 
 #undef __cplusplus
@@ -92,9 +89,6 @@ VnError VnThread_startNew(VnThread *thread, VnThread_StartRoutine startRoutine, 
 	struct sched_param param;
 	pthread_attr_getschedparam(&attr, &param);
 	param.sched_priority = sched_get_priority_max(SCHED_FIFO);
-#if defined(__PX4_FREERTOS)
-	param.sched_priority = px4_board_map_priority(param.sched_priority);
-#endif /* __PX4_FREERTOS */
 	pthread_attr_setschedparam(&attr, &param);
 
 	errorCode = pthread_create(

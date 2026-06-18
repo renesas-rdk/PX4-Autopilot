@@ -57,27 +57,6 @@ BMP280::init()
 {
 	// reset sensor
 	_interface->set_reg(BMP280_VALUE_RESET, BMP280_ADDR_RESET);
-#if defined(__PX4_FREERTOS)
-	usleep(15000); // Increased reset delay for RZV2H platform stability
-
-	// check id with retry for better reliability
-	uint8_t id = _interface->get_reg(BMP280_ADDR_ID);
-	if (id != BMP280_VALUE_ID) {
-		// Retry ID check once
-		usleep(5000);
-		id = _interface->get_reg(BMP280_ADDR_ID);
-		if (id != BMP280_VALUE_ID) {
-			PX4_ERR("id of your baro is not: 0x%02x, it's 0x%02x", BMP280_VALUE_ID, id);
-			return -EIO;
-		}
-	}
-
-	// set config, recommended settings with timing delays for stability
-	_interface->set_reg(_curr_ctrl, BMP280_ADDR_CTRL);
-	usleep(5000); // Allow control register to settle
-	_interface->set_reg(BMP280_CONFIG_F16, BMP280_ADDR_CONFIG);
-	usleep(5000); // Allow config register to settle
-#else
 	usleep(10000);
 
 	// check id
@@ -89,7 +68,6 @@ BMP280::init()
 	// set config, recommended settings
 	_interface->set_reg(_curr_ctrl, BMP280_ADDR_CTRL);
 	_interface->set_reg(BMP280_CONFIG_F0, BMP280_ADDR_CONFIG);
-#endif /* __PX4_FREERTOS */
 
 	// get calibration and pre process them
 	_cal = _interface->get_calibration(BMP280_ADDR_CAL);

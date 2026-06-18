@@ -256,6 +256,14 @@ private:
 
 	hrt_abstime _boot_timestamp{0};
 	hrt_abstime _last_disarmed_timestamp{0};
+
+#if defined(__PX4_FREERTOS)
+	// RZ/V demo bench-arm runtime permit (MAV_CMD_USER_1 heartbeat from the offboard controller,
+	// fed by the custom-QGC force_offboard toggle). Gates the COM_FORCE_OF_ARM RC-into-OFFBOARD bypass;
+	// stale (>2 s) or absent → fails closed (RC arming re-denied). See arm gate + handle_command.
+	bool        _bench_arm_permit{false};
+	hrt_abstime _bench_arm_permit_us{0};
+#endif /* __PX4_FREERTOS */
 	hrt_abstime _overload_start{0};		///< time when CPU overload started
 
 #if !defined(CONFIG_ARCH_LEDS) && defined(BOARD_HAS_CONTROL_STATUS_LEDS)
@@ -331,6 +339,9 @@ private:
 	param_t _param_rc_map_fltmode{PARAM_INVALID};
 
 	DEFINE_PARAMETERS(
+#if defined(__PX4_FREERTOS)
+		(ParamBool<px4::params::COM_FORCE_OF_ARM>)  _param_com_force_of_arm,
+#endif /* __PX4_FREERTOS */
 		(ParamFloat<px4::params::COM_DISARM_LAND>)  _param_com_disarm_land,
 		(ParamFloat<px4::params::COM_DISARM_PRFLT>) _param_com_disarm_prflt,
 		(ParamBool<px4::params::COM_DISARM_MAN>)    _param_com_disarm_man,

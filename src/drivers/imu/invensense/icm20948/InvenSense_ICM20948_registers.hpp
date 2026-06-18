@@ -200,12 +200,7 @@ enum REG_BANK_SEL_BIT : uint8_t {
 // GYRO_CONFIG_1
 enum GYRO_CONFIG_1_BIT : uint8_t {
 	// 5:3 GYRO_DLPFCFG[2:0]
-#if defined(__PX4_FREERTOS)
-	GYRO_DLPFCFG         = Bit5 | Bit4 | Bit3, // mask for DLPFCFG field
-	GYRO_DLPFCFG_51HZ    = Bit4 | Bit3,        // 011b = 51.2 Hz bandwidth
-#else
 	GYRO_DLPFCFG         = Bit5 | Bit4 | Bit3, // 7 -
-#endif /* __PX4_FREERTOS */
 
 	// 2:1 GYRO_FS_SEL[1:0]
 	GYRO_FS_SEL_250_DPS  = 0,           // 0b00 = ±250 dps
@@ -219,12 +214,7 @@ enum GYRO_CONFIG_1_BIT : uint8_t {
 // ACCEL_CONFIG
 enum ACCEL_CONFIG_BIT : uint8_t {
 	// 5:3 ACCEL_DLPFCFG[2:0]
-#if defined(__PX4_FREERTOS)
-	ACCEL_DLPFCFG       = Bit5 | Bit4 | Bit3, // mask for DLPFCFG field
-	ACCEL_DLPFCFG_24HZ  = Bit5,               // 100b = 23.9 Hz bandwidth
-#else
 	ACCEL_DLPFCFG    = Bit5 | Bit4 | Bit3, // 7 -
-#endif /* __PX4_FREERTOS */
 
 	// 2:1 ACCEL_FS_SEL[1:0]
 	ACCEL_FS_SEL_2G  = 0,           // 0b00: ±2g

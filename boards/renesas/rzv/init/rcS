@@ -12,25 +12,52 @@ rc_input start -d /dev/ttyS6
 rc_update start
 ? sleep 1
 
-# Bring up sensors in legacy order with delays
-bmp280 -I -b 7 -a 0x76 start
+# Start the uXRCE-DDS bridge BEFORE the sensor stack so the CA55 agent gets a
+# working DDS link even when sensor power is off (bench/ROS2-only testing).
+# Without this ordering, an early sensor probe failure halts NSH init and the
+# bridge never advertises rpmsg-service-{0,1} → CA55 agent blocks forever
+# waiting for NS_ANNOUNCE.
+uxrce_dds_client start -t custom
 ? sleep 1
-mpu9250 -s -M -b 0 -R 0 start
-# mpu9250 -s -b 0 -R 0 start
+
+# Bring up sensors with delays.
+# `?` on each hardware probe so a missing/depowered sensor does NOT halt rcS.
+#
+# Sensor set selection. This board revision uses the MPU9250 IMU (+AK8963 mag) on
+# SPI0 and the BMP280 baro on I2C7; the ICM-45688 new-sensor-set probes below are
+# disabled (that hardware is not installed on this board). To switch to the new
+# set: enable the probes below and disable the mpu9250/bmp280 lines.
+#
+# New sensor set (disabled — not installed on this board): 2x baro + 1x mag on I2C bus 7,
+# 3x ICM-45688 on SPI bus 0 (SSL0/1/2 via -c 1..3).
+# ? icp201xx -I -b 7 -a 0x63 start
+# ? bmp388 -I -b 7 -a 0x76 start
+# bmp388 note: 0x77 if SDO=VDD per board wiring; NEVER start together with
+# bmp280 on the same address/bus.
+# ? bmm150 -I -b 7 -a 0x10 -R 0 start
 ? sleep 1
-sensors start
+# ? icm45686 -s -b 0 -c 1 -R 0 start
+# ? icm45686 -s -b 0 -c 2 -R 0 start
+# ? icm45686 -s -b 0 -c 3 -R 0 start
+# -R rotations are TBD until mounting orientation is finalized.
+? sleep 1
+# Active sensor set: MPU9250 IMU + BMP280 baro.
+? bmp280 -I -b 7 -a 0x76 start
+? mpu9250 -s -M -b 0 -R 0 start
+? sensors start
 ? sleep 1
 
 # Power Module PM03D (Digital I2C) startup on bus 7 (same as BMP280).
 # PM03D uses INA228 chip (not INA226). ina226 probe at 0x41 will always NACK on PM03D — silence it.
-# ina228 probes at 0x45 (default INA228 address, A0=A1=GND). No ? so we see real errors if it fails.
+# ina228 probes at 0x45 (default INA228 address, A0=A1=GND).
+# `?` so a depowered power module does not halt boot.
 # ? ina226 -I -b 7 start
-ina228 -I -b 7 start
+? ina228 -I -b 7 start
 ? sleep 1
-# Start gyro_fft for vibration analysis
-gyro_fft start
+# Start gyro_fft for vibration analysis (depends on IMU running)
+? gyro_fft start
 # GPS M10 on UART9
-gps start -d /dev/ttyS9 -b 115200
+? gps start -d /dev/ttyS9 -b 115200
 ? sleep 1
 # IST8310 external mag from GPS M10 companion, on I2C bus 7 (shared with BMP280/INA228).
 # Use ? so boot continues if I2C lines not yet connected or device absent.
@@ -39,7 +66,7 @@ gps start -d /dev/ttyS9 -b 115200
 # Holybro M10 status RGB LED (IS31FL3195) on GPS companion I2C bus 7.
 # ? rgbled_is31fl3195 -I -b 7 -a 0x54 start
 # ? sleep 1
-tfmini start -d /dev/ttyS4
+? tfmini start -d /dev/ttyS4
 ? sleep 1
 land_detector start multicopter
 
@@ -90,5 +117,3 @@ mavlink stream -d /dev/ttyS5 -s MANUAL_CONTROL -r 5
 mavlink stream -d /dev/ttyS5 -s STATUSTEXT -r 2
 ? sleep 1
 mavlink boot_complete
-
-# uxrce_dds_client start -t custom

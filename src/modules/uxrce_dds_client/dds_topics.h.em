@@ -88,6 +88,7 @@ struct SendTopicsSubs {
 	uint32_t num_payload_sent{};
 
 	bool init(uxrSession *session, uxrStreamId reliable_out_stream_id, uxrStreamId reliable_in_stream_id, uxrStreamId best_effort_in_stream_id, uxrObjectId participant_id, const char *client_namespace);
+	void reinit_failed_subs();
 	void update(uxrSession *session, uxrStreamId reliable_out_stream_id, uxrStreamId best_effort_stream_id, uxrObjectId participant_id, const char *client_namespace);
 	void reset();
 };
@@ -97,8 +98,11 @@ bool SendTopicsSubs::init(uxrSession *session, uxrStreamId reliable_out_stream_i
 	for (unsigned idx = 0; idx < sizeof(send_subscriptions)/sizeof(send_subscriptions[0]); ++idx) {
 		if (fds[idx].events == 0) {
 			fds[idx].fd = orb_subscribe(send_subscriptions[idx].orb_meta);
-			fds[idx].events = POLLIN;
-			orb_set_interval(fds[idx].fd, UXRCE_DEFAULT_POLL_RATE);
+			if (fds[idx].fd >= 0) {
+				fds[idx].events = POLLIN;
+				orb_set_interval(fds[idx].fd, UXRCE_DEFAULT_POLL_RATE);
+			}
+			// else: leave events==0 so reinit_failed_subs() can retry when CDev registers
 		}
 
 		if (!create_data_writer(session, reliable_out_stream_id, participant_id, static_cast<ORB_ID>(send_subscriptions[idx].orb_meta->o_id), client_namespace, send_subscriptions[idx].topic,
@@ -110,12 +114,36 @@ bool SendTopicsSubs::init(uxrSession *session, uxrStreamId reliable_out_stream_i
 	return ret;
 }
 
+void SendTopicsSubs::reinit_failed_subs() {
+	for (unsigned idx = 0; idx < sizeof(send_subscriptions)/sizeof(send_subscriptions[0]); ++idx) {
+		if (fds[idx].events == 0) {
+			fds[idx].fd = orb_subscribe(send_subscriptions[idx].orb_meta);
+			if (fds[idx].fd >= 0) {
+				fds[idx].events = POLLIN;
+				orb_set_interval(fds[idx].fd, UXRCE_DEFAULT_POLL_RATE);
+			}
+		}
+	}
+}
+
 void SendTopicsSubs::reset() {
 	num_payload_sent = 0;
 	for (unsigned idx = 0; idx < sizeof(send_subscriptions)/sizeof(send_subscriptions[0]); ++idx) {
 		send_subscriptions[idx].data_writer = uxr_object_id(0, UXR_INVALID_ID);
+#if defined(__PX4_FREERTOS)
+		// Guard: fd may already be -1 on a second reset() call (reconnect path).
+		if (fds[idx].fd >= 0) {
+			orb_unsubscribe(fds[idx].fd);
+		}
+		fds[idx].fd = -1;
+		// Clear events so init()/reinit_failed_subs() re-subscribes on reconnect.
+		// Without this, the events==0 guard in init() skips orb_subscribe and the
+		// px4_poll loop spins on stale fd=-1, returning -1 every iteration.
+		fds[idx].events = 0;
+#else
 		orb_unsubscribe(fds[idx].fd);
 		fds[idx].fd = -1;
+#endif
 	}
 };
 

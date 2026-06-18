@@ -208,6 +208,30 @@ PARAM_DEFINE_INT32(COM_RC_ARM_HYST, 1000);
 
 PARAM_DEFINE_FLOAT(COM_DISARM_LAND, 2.0f);
 
+#if defined(__PX4_FREERTOS)
+/**
+ * Force-OFFBOARD bench arm: allow RC arming directly in OFFBOARD
+ *
+ * When enabled (1), the "Arming denied: switch to manual mode first" gate is bypassed for
+ * RC arm requests (stick gesture / switch / button) WHILE the active mode is OFFBOARD AND a
+ * fresh runtime bench-arm permit is present (MAV_CMD_USER_1 heartbeat from the offboard
+ * controller, driven by the custom-QGC force_offboard toggle). This lets a props-removed
+ * headball/bench rig be armed straight into a ROS2-controlled OFFBOARD demo via the physical
+ * RC, without first arming in a manual mode and switching.
+ *
+ * The system health & arming checks (canArm) STILL apply, and the RC kill switch still
+ * overrides. Only the manual-mode precondition for RC arming is relaxed, and only in OFFBOARD
+ * with a live permit — a lost link/QGC lets the permit go stale (>2 s) and re-denies RC arming.
+ *
+ * WARNING: bench-only. Leave 0 (disabled) for any real / outdoor flight — arming in a
+ * non-manual mode means there is no manual throttle authority if the controller misbehaves.
+ *
+ * @group Commander
+ * @boolean
+ */
+PARAM_DEFINE_INT32(COM_FORCE_OF_ARM, 0);
+#endif /* __PX4_FREERTOS */
+
 /**
  * Time-out for auto disarm if not taking off
  *
@@ -320,6 +344,23 @@ PARAM_DEFINE_INT32(COM_IMB_PROP_ACT, 0);
  * @increment 0.01
  */
 PARAM_DEFINE_FLOAT(COM_OF_LOSS_T, 1.0f);
+
+#if defined(__PX4_FREERTOS)
+/**
+ * Skip position/velocity estimate validity check for Offboard mode
+ *
+ * When set to 1, Offboard mode can be entered without a valid local position or
+ * velocity estimate (e.g. indoor flight without GPS). Required for indoor
+ * velocity/position Offboard such as the active-track follower; attitude Offboard
+ * does not need it. Default 0 keeps the upstream safety check for outdoor flight —
+ * set 1 only for controlled indoor use (e.g. via the demo-mode selector), as the
+ * vehicle drifts in XY without a valid position estimate.
+ *
+ * @boolean
+ * @group Commander
+ */
+PARAM_DEFINE_INT32(COM_OF_NOEST, 0);
+#endif /* __PX4_FREERTOS */
 
 /**
  * Set action after a quadchute

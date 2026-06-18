@@ -288,7 +288,12 @@ if(BUILD_TESTING)
 	add_subdirectory(test)
 endif()
 
-# __PX4_FREERTOS compile-time stack overflow detector
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+# __PX4_FREERTOS compile-time stack overflow detector.
+# GCCRZ is the RZ/V2H cross toolchain's forced COMPILER_ID (a real GNU gcc 13.3 under
+# the hood, see cross.cmake): it deliberately differs from "GNU" to contain PX4's GNU
+# version checks / upstream GNU-branch drift. This per-target stack detector is the ONLY
+# frame-size guard active on the FreeRTOS build (px4_add_module's generic
+# -Wframe-larger-than is nuttx-gated), so it must fire for GCCRZ too, else it is lost.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "GCCRZ")
 	target_compile_options(modules__ekf2 PRIVATE -Wframe-larger-than=8192 -Wstack-usage=8192)
 endif()

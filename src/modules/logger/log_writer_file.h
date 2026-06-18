@@ -195,9 +195,21 @@ private:
 
 		int fd() const { return _fd; }
 
+#if defined(__PX4_FREERTOS)
+		/* The fsync outcome is reported via the
+		 * CALL-LOCAL out-param so the WRITE return value stays pure — the caller's
+		 * retry-once branch must stay reachable only from real write failures
+		 * (retrying after accepted bytes would duplicate data in the .ulg). */
+		inline ssize_t write_to_file(const void *buffer, size_t size, bool call_fsync,
+					     bool *fsync_failed) const;
+
+		/* Returns the ::fsync() result (0 ok, -1 + errno) instead of discarding it. */
+		inline int fsync() const;
+#else
 		inline ssize_t write_to_file(const void *buffer, size_t size, bool call_fsync) const;
 
 		inline void fsync() const;
+#endif
 
 		void mark_read(size_t n) { _count -= n; _total_written += n; }
 

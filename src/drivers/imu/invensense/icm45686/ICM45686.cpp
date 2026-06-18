@@ -136,7 +136,9 @@ int ICM45686::probe()
 		const uint8_t whoami = RegisterRead(Register::BANK_0::WHO_AM_I);
 
 		if (whoami != WHOAMI) {
-			DEVICE_DEBUG("unexpected WHO_AM_I 0x%02x", whoami);
+			// RZV: WARN (not DEBUG) so the ICM-45688 WHO_AM_I value is visible
+			// on the console during bring-up before it is added as accepted.
+			PX4_WARN("unexpected WHO_AM_I 0x%02x", whoami);
 			return PX4_ERROR;
 		}
 	}

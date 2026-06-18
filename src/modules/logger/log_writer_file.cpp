@@ -456,13 +456,27 @@ void LogWriterFile::run()
 
 #endif
 
+#if defined(__PX4_FREERTOS)
+					/* Write failure and post-write fsync failure are SPLIT.
+					 * The retry-once branch below is reachable ONLY from written < 0 —
+					 * a successful write followed by a failed fsync must never re-enter
+					 * write_to_file() with the same read_ptr/available (the bytes were
+					 * already accepted; rewriting them duplicates data in the .ulg). */
+					bool fsync_failed = false;
+					int written = buffer.write_to_file(read_ptr, available, call_fsync, &fsync_failed);
+#else
 					int written = buffer.write_to_file(read_ptr, available, call_fsync);
+#endif
 
 					if (written < 0) {
 						// retry once
 						PX4_ERR("write failed errno:%i (%s), retrying", errno, strerror(errno));
 						px4_usleep(10000); // 10 milliseconds
+#if defined(__PX4_FREERTOS)
+						written = buffer.write_to_file(read_ptr, available, call_fsync, &fsync_failed);
+#else
 						written = buffer.write_to_file(read_ptr, available, call_fsync);
+#endif
 					}
 
 					/* buffer.mark_read() requires _mtx to be locked */
@@ -472,7 +486,25 @@ void LogWriterFile::run()
 						/* subtract bytes written from number in buffer (count -= written) */
 						buffer.mark_read(written);
 
+#if defined(__PX4_FREERTOS)
+						if (fsync_failed) {
+							/* Retry the fsync ITSELF once (never the write). */
+							if (buffer.fsync() != 0) {
+								/* Visible durability error: same TERMINAL outcome as a
+								 * write failure (new file), different retry semantics. */
+								PX4_ERR("fsync failed errno:%i (%s) — closing log file", errno, strerror(errno));
+								buffer._had_write_error.store(true);
+								buffer._should_run = false;
+								pthread_mutex_unlock(&_mtx);
+								buffer.close_file();
+								pthread_mutex_lock(&_mtx);
+								buffer.reset();
+							}
+
+						} else if (!buffer._should_run && written == static_cast<int>(available) && !is_part) {
+#else
 						if (!buffer._should_run && written == static_cast<int>(available) && !is_part) {
+#endif
 							/* Stop only when all data written */
 							pthread_mutex_unlock(&_mtx);
 							buffer.close_file();
@@ -486,9 +518,7 @@ void LogWriterFile::run()
 #if defined(__PX4_FREERTOS)
 						if (errno == EBADF && buffer.fd() < 0) {
 							buffer.mark_read(available);
-
-						} else
-						{
+						} else {
 #endif /* __PX4_FREERTOS */
 						buffer._should_run = false;
 						pthread_mutex_unlock(&_mtx);
@@ -502,8 +532,25 @@ void LogWriterFile::run()
 
 				} else if (call_fsync && buffer._should_run) {
 					pthread_mutex_unlock(&_mtx);
+#if defined(__PX4_FREERTOS)
+					/* Periodic fsync has no write to confuse — a failure
+					 * goes straight to the terminal visible-durability-error path. */
+					const int periodic_fsync_ret = buffer.fsync();
+					pthread_mutex_lock(&_mtx);
+
+					if (periodic_fsync_ret != 0) {
+						PX4_ERR("periodic fsync failed errno:%i (%s) — closing log file", errno, strerror(errno));
+						buffer._had_write_error.store(true);
+						buffer._should_run = false;
+						pthread_mutex_unlock(&_mtx);
+						buffer.close_file();
+						pthread_mutex_lock(&_mtx);
+						buffer.reset();
+					}
+#else
 					buffer.fsync();
 					pthread_mutex_lock(&_mtx);
+#endif
 
 				} else if (available == 0 && !buffer._should_run) {
 					pthread_mutex_unlock(&_mtx);
@@ -739,16 +786,16 @@ bool LogWriterFile::LogFileBuffer::start_log(const char *filename)
 	return true;
 }
 
-void LogWriterFile::LogFileBuffer::fsync() const
+#if defined(__PX4_FREERTOS)
+int LogWriterFile::LogFileBuffer::fsync() const
 {
 	perf_begin(_perf_fsync);
-#if defined(__PX4_FREERTOS)
 	const bool track_latency = px4_logger_track_io_latency();
 	const hrt_abstime start_time = track_latency ? hrt_absolute_time() : 0;
-#endif /* __PX4_FREERTOS */
-	::fsync(_fd);
+	/* Return the result instead of discarding it — on the RZV stream
+	 * backend a failed drain+fdatasync handshake surfaces here as -1 + errno. */
+	const int fsync_ret = ::fsync(_fd);
 	perf_end(_perf_fsync);
-#if defined(__PX4_FREERTOS)
 	const uint64_t threshold_us = px4_logger_slow_fsync_threshold_us();
 	if (track_latency && (threshold_us > 0)) {
 		const hrt_abstime elapsed_us = hrt_elapsed_time(&start_time);
@@ -759,19 +806,21 @@ void LogWriterFile::LogFileBuffer::fsync() const
 			 (unsigned long long)(threshold_us / 1000));
 		}
 	}
-#endif /* __PX4_FREERTOS */
+	return fsync_ret;
 }
 
-ssize_t LogWriterFile::LogFileBuffer::write_to_file(const void *buffer, size_t size, bool call_fsync) const
+ssize_t LogWriterFile::LogFileBuffer::write_to_file(const void *buffer, size_t size, bool call_fsync,
+		bool *fsync_failed) const
 {
+	if (fsync_failed) {
+		*fsync_failed = false;
+	}
+
 	perf_begin(_perf_write);
-#if defined(__PX4_FREERTOS)
 	const bool track_latency = px4_logger_track_io_latency();
 	const hrt_abstime start_time = track_latency ? hrt_absolute_time() : 0;
-#endif /* __PX4_FREERTOS */
 	ssize_t ret = ::write(_fd, buffer, size);
 	perf_end(_perf_write);
-#if defined(__PX4_FREERTOS)
 	const uint64_t threshold_us = px4_logger_slow_write_threshold_us();
 
 	if (track_latency && (threshold_us > 0)) {
@@ -783,7 +832,31 @@ ssize_t LogWriterFile::LogFileBuffer::write_to_file(const void *buffer, size_t s
 			 (unsigned long long)(threshold_us / 1000));
 		}
 	}
-#endif /* __PX4_FREERTOS */
+
+	if (call_fsync) {
+		/* Report the fsync outcome OUT-OF-BAND. Folding it into the
+		 * write return would re-enter the caller's retry-once branch with bytes
+		 * ::write already accepted -> duplicated data in the .ulg. */
+		if (fsync() != 0 && fsync_failed) {
+			*fsync_failed = true;
+		}
+	}
+
+	return ret;
+}
+#else
+void LogWriterFile::LogFileBuffer::fsync() const
+{
+	perf_begin(_perf_fsync);
+	::fsync(_fd);
+	perf_end(_perf_fsync);
+}
+
+ssize_t LogWriterFile::LogFileBuffer::write_to_file(const void *buffer, size_t size, bool call_fsync) const
+{
+	perf_begin(_perf_write);
+	ssize_t ret = ::write(_fd, buffer, size);
+	perf_end(_perf_write);
 
 	if (call_fsync) {
 		fsync();
@@ -791,6 +864,7 @@ ssize_t LogWriterFile::LogFileBuffer::write_to_file(const void *buffer, size_t s
 
 	return ret;
 }
+#endif
 
 void LogWriterFile::LogFileBuffer::close_file()
 {

@@ -50,15 +50,21 @@ void OffboardChecks::checkAndReport(const Context &context, Report &reporter)
 					   || offboard_control_mode.acceleration || offboard_control_mode.attitude || offboard_control_mode.body_rate
 					   || offboard_control_mode.thrust_and_torque || offboard_control_mode.direct_actuator) && data_is_recent;
 
-		if (offboard_control_mode.position && reporter.failsafeFlags().local_position_invalid) {
-			offboard_available = false;
+#if defined(__PX4_FREERTOS)
+		if (!_param_com_of_noest.get()) {
+#endif
+			if (offboard_control_mode.position && reporter.failsafeFlags().local_position_invalid) {
+				offboard_available = false;
 
-		} else if (offboard_control_mode.velocity && reporter.failsafeFlags().local_velocity_invalid) {
-			offboard_available = false;
+			} else if (offboard_control_mode.velocity && reporter.failsafeFlags().local_velocity_invalid) {
+				offboard_available = false;
 
-		} else if (offboard_control_mode.acceleration && reporter.failsafeFlags().attitude_invalid) {
-			// OFFBOARD acceleration handled by position controller
-			offboard_available = false;
+			} else if (offboard_control_mode.acceleration && reporter.failsafeFlags().attitude_invalid) {
+				// OFFBOARD acceleration handled by position controller
+				offboard_available = false;
+#if defined(__PX4_FREERTOS)
+			}
+#endif
 		}
 
 		// This is a mode requirement, no need to report

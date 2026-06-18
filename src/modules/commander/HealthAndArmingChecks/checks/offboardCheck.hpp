@@ -50,6 +50,11 @@ private:
 	uORB::Subscription _offboard_control_mode_sub{ORB_ID(offboard_control_mode)};
 
 	DEFINE_PARAMETERS_CUSTOM_PARENT(HealthAndArmingCheckBase,
+#if defined(__PX4_FREERTOS)
+					(ParamFloat<px4::params::COM_OF_LOSS_T>) _param_com_of_loss_t,
+					(ParamInt<px4::params::COM_OF_NOEST>) _param_com_of_noest
+#else
 					(ParamFloat<px4::params::COM_OF_LOSS_T>) _param_com_of_loss_t
+#endif
 				       );
 };

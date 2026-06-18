@@ -35,7 +35,12 @@ static StaticSemaphore_t rx_data_sem_buffer;
 
 // Define buffer sizes
 #define RX_BUFFER_SIZE 2048
-#define RX_BUFFER_COUNT 4  // 4 buffers = 8KB total
+// 16 slots (32KB) — increased from 4 to prevent drops when the DDS client
+// task is briefly preempted during reconnect or FastDDS re-discovery.
+// Drops caused time-sync messages to be silently lost, producing a
+// "time jump detected" in PX4 which invalidated offboard_control_mode
+// timestamps and triggered failsafe on every Altitude→Offboard switch.
+#define RX_BUFFER_COUNT 16
 
 // Ring buffer slot structure
 struct RxBufferSlot {

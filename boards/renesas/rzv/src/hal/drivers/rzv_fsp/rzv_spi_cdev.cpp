@@ -24,11 +24,11 @@
 #include <cstring>
 #include <fcntl.h>
 #include <memory>
+#include <new>
 #include <vector>
 #include <unistd.h>
 
 #include "rzv_fsp/spi_fsp_backend.h"
-#include "rzv_fsp/dma_buffer.h"
 #include "posix_compat/spi/spidev.h"
 
 #include <cdev/CDev.hpp>
@@ -38,24 +38,11 @@ namespace
 
 using cdev::file_t;
 
-/* DMA-safe bounce buffers for SPI transfers.
- *
- * The FSP SPI DMA engine requires buffers in the noncached memory region.
- * Drivers (MPU9250, ICM20948, etc.) may pass stack or heap buffers that are
- * not DMA-safe. These static bounce buffers are placed in .noncache_buffer
- * and used transparently when the caller's buffer fails rzv_dma_buffer_is_dma_safe().
- *
- * Thread safety: SPI transfers on a single bus are already serialized by the
- * FSP backend mutex, so a single pair of static buffers per file is sufficient.
- *
- * Size: 1024 bytes covers the largest known sensor FIFO transfer
- * (MPU9250/ICM20948 FIFO: max ~512 bytes per batch read).
- */
-static constexpr size_t SPI_BOUNCE_BUF_SIZE = 1024U;
-static uint8_t s_spi_tx_bounce[SPI_BOUNCE_BUF_SIZE]
-__attribute__((aligned(RZV_DMA_DEFAULT_ALIGNMENT), section(".noncache_buffer")));
-static uint8_t s_spi_rx_bounce[SPI_BOUNCE_BUF_SIZE]
-__attribute__((aligned(RZV_DMA_DEFAULT_ALIGNMENT), section(".noncache_buffer")));
+/* This layer is intentionally thin: it only translates the spidev ioctl ABI
+ * into per-file state and forwards transfers to the FSP backend. All
+ * DMA-safety handling (bounce buffers, cache maintenance), bus mutual
+ * exclusion, retries and per-device SSL routing live in spi_fsp_backend.c —
+ * settings and transfer are applied there inside one critical section. */
 
 struct SpiFileState {
 	uint8_t mode{SPI_MODE_0};
@@ -66,9 +53,10 @@ struct SpiFileState {
 class RZVSpiCDev : public cdev::CDev
 {
 public:
-	RZVSpiCDev(const char *devname, uint8_t bus, rzv_spi_backend_t &backend) :
+	RZVSpiCDev(const char *devname, uint8_t bus, uint8_t ssl_index, rzv_spi_backend_t &backend) :
 		cdev::CDev(devname),
 		_bus(bus),
+		_ssl_index(ssl_index),
 		_backend(backend)
 	{
 	}
@@ -94,7 +82,8 @@ public:
 			}
 		}
 
-		SpiFileState *state = static_cast<SpiFileState *>(std::calloc(1, sizeof(SpiFileState)));
+		/* new (not calloc): default member initializers (mode/bits/speed) must run */
+		SpiFileState *state = new (std::nothrow) SpiFileState();
 
 		if (state == nullptr) {
 			cdev::CDev::close(filep);
@@ -110,7 +99,7 @@ public:
 	int close(file_t *filep) override
 	{
 		if (filep != nullptr && filep->f_priv != nullptr) {
-			std::free(filep->f_priv);
+			delete static_cast<SpiFileState *>(filep->f_priv);
 			filep->f_priv = nullptr;
 		}
 
@@ -130,18 +119,17 @@ public:
 		const unsigned int request_nr = _IOC_NR(command);
 		const unsigned int request_dir = _IOC_DIR(command);
 
+		/* SPI_IOC_WR_* only update per-file state. The hardware is configured
+		 * atomically with the next transfer inside the backend critical
+		 * section — applying settings here would race transfers of other
+		 * devices sharing the channel. SPI_IOC_RD_* return per-file state. */
+
 		if ((request_type == SPI_IOC_MAGIC) && (request_nr == 1U) && (request_dir == _IOC_WRITE)) {
 			if (arg == 0UL) {
 				return -EINVAL;
 			}
 
-			uint8_t mode = *reinterpret_cast<uint8_t *>(arg);
-
-			if (rzv_spi_backend_set_mode(&_backend, mode) != 0) {
-				return -EIO;
-			}
-
-			state->mode = mode;
+			state->mode = *reinterpret_cast<uint8_t *>(arg);
 			return PX4_OK;
 		}
 
@@ -161,8 +149,8 @@ public:
 
 			uint8_t bits = *reinterpret_cast<uint8_t *>(arg);
 
-			if (rzv_spi_backend_set_bits_per_word(&_backend, bits) != 0) {
-				return -EIO;
+			if ((bits != 8U) && (bits != 16U)) {
+				return -EINVAL;
 			}
 
 			state->bits_per_word = bits;
@@ -185,8 +173,8 @@ public:
 
 			uint32_t speed = *reinterpret_cast<uint32_t *>(arg);
 
-			if (rzv_spi_backend_set_speed(&_backend, speed) != 0) {
-				return -EIO;
+			if (speed == 0U) {
+				return -EINVAL;
 			}
 
 			state->speed_hz = speed;
@@ -210,8 +198,6 @@ public:
 	}
 
 private:
-	static constexpr int SPI_IOC_MAGIC_MASK = 0xffff0000;
-
 	int handle_transfer(SpiFileState *state, unsigned int cmd, unsigned long arg)
 	{
 		if ((arg == 0UL) || (state == nullptr)) {
@@ -231,53 +217,24 @@ private:
 		for (size_t i = 0; i < transfers; i++) {
 			struct spi_ioc_transfer xfer = user_transfers[i];
 
-			if (xfer.bits_per_word != 0U && xfer.bits_per_word != state->bits_per_word) {
-				if (rzv_spi_backend_set_bits_per_word(&_backend, xfer.bits_per_word) != 0) {
-					return -EIO;
-				}
-
-				state->bits_per_word = xfer.bits_per_word;
-			}
-
-			if (xfer.speed_hz != 0U && xfer.speed_hz != state->speed_hz) {
-				if (rzv_spi_backend_set_speed(&_backend, xfer.speed_hz) != 0) {
-					return -EIO;
-				}
-
-				state->speed_hz = xfer.speed_hz;
-			}
+			rzv_spi_xfer_cfg_t cfg{};
+			cfg.ssl_index = _ssl_index;
+			cfg.mode = state->mode;
+			cfg.bits_per_word = (xfer.bits_per_word != 0U) ? xfer.bits_per_word : state->bits_per_word;
+			cfg.speed_hz = (xfer.speed_hz != 0U) ? xfer.speed_hz : state->speed_hz;
 
 			const void *tx_ptr = reinterpret_cast<const void *>(static_cast<uintptr_t>(xfer.tx_buf));
 			void *rx_ptr = reinterpret_cast<void *>(static_cast<uintptr_t>(xfer.rx_buf));
 
-			if (xfer.len > SPI_BOUNCE_BUF_SIZE) {
-				PX4_ERR("SPI transfer len %u exceeds bounce buffer %zu", (unsigned)xfer.len, SPI_BOUNCE_BUF_SIZE);
-				return -EINVAL;
-			}
-
-			/* Bounce tx/rx buffers into DMA-safe memory if needed. */
-			const void *dma_tx = tx_ptr;
-			void       *dma_rx = rx_ptr;
-
-			const bool tx_bounce = tx_ptr && !rzv_dma_buffer_is_dma_safe(tx_ptr, xfer.len);
-			const bool rx_bounce = rx_ptr && !rzv_dma_buffer_is_dma_safe(rx_ptr, xfer.len);
-
-			if (tx_bounce) {
-				memcpy(s_spi_tx_bounce, tx_ptr, xfer.len);
-				dma_tx = s_spi_tx_bounce;
-			}
-
-			if (rx_bounce) {
-				dma_rx = s_spi_rx_bounce;
-			}
-
-			if (rzv_spi_backend_transfer(&_backend, dma_tx, dma_rx, xfer.len) != 0) {
+			/* Raw pointers go straight to the backend: it owns the DMA-safety
+			 * decision (bounce/cache) and rejects len > bounce size. */
+			if (rzv_spi_backend_transfer(&_backend, &cfg, tx_ptr, rx_ptr, xfer.len) != 0) {
 				return -EIO;
 			}
 
-			if (rx_bounce) {
-				memcpy(rx_ptr, s_spi_rx_bounce, xfer.len);
-			}
+			/* Per-transfer overrides persist, matching prior behavior. */
+			state->bits_per_word = cfg.bits_per_word;
+			state->speed_hz = cfg.speed_hz;
 
 			bytes_transferred += xfer.len;
 		}
@@ -286,6 +243,7 @@ private:
 	}
 
 	uint8_t _bus{0U};
+	uint8_t _ssl_index{0U};
 	rzv_spi_backend_t &_backend;
 };
 
@@ -333,10 +291,15 @@ int rzv_init_spi_cdevs(rzv_spi_backend_t *backend, uint8_t bus)
 				continue;
 			}
 
+			/* cs_gpio is a logical chip-select index (1..4, see board_config.h);
+			 * the physical SSL line is (cs_gpio - 1). 0 keeps the legacy
+			 * "FSP default line" behavior (SSL0). */
+			const uint8_t ssl_index = (device.cs_gpio != 0) ? static_cast<uint8_t>(device.cs_gpio - 1) : 0U;
+
 			char dev_path[32];
 			snprintf(dev_path, sizeof(dev_path), "/dev/spidev%u.%u", bus, static_cast<unsigned>(chip_id));
 
-			auto cdev = std::make_unique<RZVSpiCDev>(dev_path, bus, *backend);
+			auto cdev = std::make_unique<RZVSpiCDev>(dev_path, bus, ssl_index, *backend);
 			int init_ret = cdev->init();
 
 			if (init_ret != PX4_OK) {

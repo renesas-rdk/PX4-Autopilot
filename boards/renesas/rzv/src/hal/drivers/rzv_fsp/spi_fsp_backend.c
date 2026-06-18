@@ -233,6 +233,20 @@ int rzv_spi_backend_init(rzv_spi_backend_t *handle, uint8_t bus)
 	handle->config.p_callback = rzv_spi_imu_callback;
 	handle->current_speed_hz = 1000000U;
 
+	/* Per-device SSL routing assumes every SSL line is active-low: R_SPI_B_Open
+	 * only programs the SPCR3 polarity bit for the currently selected SSL, and
+	 * with SPI_B_SSLP_LOW (= 0) the cleared SPCR3 nibble leaves all four lines
+	 * active-low, so switching SPCMD0.SSLA never needs a polarity update. An
+	 * active-high configuration would silently break the other lines, so fail
+	 * closed here instead. */
+	const spi_b_extended_cfg_t *gen_extend = (const spi_b_extended_cfg_t *)g_spi_imu_cfg.p_extend;
+
+	if (gen_extend->ssl_polarity != SPI_B_SSLP_LOW) {
+		PX4_ERR("SPI SSL routing requires active-low SSL polarity (got %d)",
+			(int)gen_extend->ssl_polarity);
+		return -1;
+	}
+
 	uint8_t initial_mode = 0U;
 	if (handle->config.clk_polarity == SPI_CLK_POLARITY_HIGH) {
 		initial_mode |= SPI_CPOL;
@@ -252,70 +266,100 @@ int rzv_spi_backend_init(rzv_spi_backend_t *handle, uint8_t bus)
 	return 0;
 }
 
-int rzv_spi_backend_set_mode(rzv_spi_backend_t *handle, uint8_t mode)
+/* Apply the per-transfer device configuration (mode/speed/bits/SSL).
+ *
+ * MUST be called with g_spi_mutex held: settings and the subsequent transfer
+ * form one critical section, so devices sharing the channel can never
+ * interleave a settings change with another device's transfer.
+ *
+ * SSL routing: the FSP r_spi_b driver only programs SPCMD0.SSLA at open time
+ * (no runtime select API), so switching lines is either a direct SSLA RMW —
+ * only when the peripheral is provably idle (SPCR.SPE == 0, the transfer-active
+ * enable bit, and SPPSR == 0, the in-use guard FSP itself checks before
+ * starting a transfer) — or a full reopen (fail-closed path). The invariant
+ * `handle->extend.ssl_select == currently selected SSL` is maintained before
+ * any reopen, so every reopen (mode/speed change, retry reset, failure
+ * recovery) restores the correct line via config.p_extend.
+ */
+static int rzv_spi_apply_cfg_locked(rzv_spi_backend_t *handle, const rzv_spi_xfer_cfg_t *cfg)
 {
-	if ((handle == NULL) || !handle->opened) {
+	bool reopen_required = handle->needs_reopen;
+
+	if ((cfg->bits_per_word != 8U) && (cfg->bits_per_word != 16U)) {
+		PX4_ERR("SPI unsupported bits per word (%u)", (unsigned)cfg->bits_per_word);
 		return -1;
 	}
 
-	uint8_t requested_mode = mode & (SPI_CPOL | SPI_CPHA);
+	handle->bits_per_word = cfg->bits_per_word;
 
-	if (requested_mode == handle->current_mode) {
-		return 0;
-	}
+	const uint8_t requested_mode = cfg->mode & (SPI_CPOL | SPI_CPHA);
 
-	uint32_t polarity = (requested_mode & SPI_CPOL) ? SPI_CLK_POLARITY_HIGH : SPI_CLK_POLARITY_LOW;
-	uint32_t phase = (requested_mode & SPI_CPHA) ? SPI_CLK_PHASE_EDGE_EVEN : SPI_CLK_PHASE_EDGE_ODD;
+	if (requested_mode != handle->current_mode) {
+		uint32_t polarity = (requested_mode & SPI_CPOL) ? SPI_CLK_POLARITY_HIGH : SPI_CLK_POLARITY_LOW;
+		uint32_t phase = (requested_mode & SPI_CPHA) ? SPI_CLK_PHASE_EDGE_EVEN : SPI_CLK_PHASE_EDGE_ODD;
 
-	if ((handle->config.clk_polarity == polarity) && (handle->config.clk_phase == phase)) {
+		if ((handle->config.clk_polarity != polarity) || (handle->config.clk_phase != phase)) {
+			handle->config.clk_polarity = polarity;
+			handle->config.clk_phase = phase;
+			reopen_required = true;
+		}
+
 		handle->current_mode = requested_mode;
-		return 0;
 	}
 
-	handle->config.clk_polarity = polarity;
-	handle->config.clk_phase = phase;
-	handle->current_mode = requested_mode;
+	if ((cfg->speed_hz != 0U) && (cfg->speed_hz != handle->current_speed_hz)) {
+		rspck_div_setting_t bitrate;
+		fsp_err_t err = R_SPI_B_CalculateBitrate(cfg->speed_hz, handle->extend.clock_source, &bitrate);
 
-	return rzv_spi_reopen(handle);
-}
+		if (err != FSP_SUCCESS) {
+			PX4_ERR("R_SPI_B_CalculateBitrate(%lu) failed (%d)", (unsigned long)cfg->speed_hz, err);
+			return -1;
+		}
 
-int rzv_spi_backend_set_bits_per_word(rzv_spi_backend_t *handle, uint8_t bits)
-{
-	if ((handle == NULL) || !handle->opened) {
+		handle->extend.spck_div = bitrate;
+		handle->current_speed_hz = cfg->speed_hz;
+		reopen_required = true;
+	}
+
+	if (cfg->ssl_index > (uint8_t)SPI_B_SSL_SELECT_SSL3) {
+		PX4_ERR("SPI invalid SSL index (%u)", (unsigned)cfg->ssl_index);
 		return -1;
 	}
 
-	if ((bits != 8U) && (bits != 16U)) {
-		return -1;
+	const spi_b_ssl_select_t ssl = (spi_b_ssl_select_t)cfg->ssl_index;
+
+	if (ssl != handle->extend.ssl_select) {
+		handle->extend.ssl_select = ssl;
+
+		if (!reopen_required) {
+			R_SPI_B0_Type *p_regs = handle->ctrl->p_regs;
+			const bool idle = ((p_regs->SPCR & R_SPI_B0_SPCR_SPE_Msk) == 0U)
+					  && (p_regs->SPPSR == 0U);
+
+			if (idle) {
+				uint32_t spcmd0 = p_regs->SPCMD0;
+				spcmd0 &= ~R_SPI_B0_SPCMD0_SSLA_Msk;
+				spcmd0 |= ((uint32_t)ssl << R_SPI_B0_SPCMD0_SSLA_Pos) & R_SPI_B0_SPCMD0_SSLA_Msk;
+				p_regs->SPCMD0 = spcmd0;
+
+			} else {
+				/* Peripheral busy or stuck (e.g. after an aborted transfer):
+				 * never RMW command registers in that state. */
+				reopen_required = true;
+			}
+		}
 	}
 
-	handle->bits_per_word = bits;
+	if (reopen_required) {
+		if (rzv_spi_reopen(handle) != 0) {
+			handle->needs_reopen = true;
+			return -1;
+		}
+
+		handle->needs_reopen = false;
+	}
+
 	return 0;
-}
-
-int rzv_spi_backend_set_speed(rzv_spi_backend_t *handle, uint32_t frequency_hz)
-{
-	if ((handle == NULL) || !handle->opened || (frequency_hz == 0U)) {
-		return -1;
-	}
-
-	/* Avoid close/open churn when the bitrate is unchanged. */
-	if (frequency_hz == handle->current_speed_hz) {
-		return 0;
-	}
-
-	rspck_div_setting_t bitrate;
-	fsp_err_t err = R_SPI_B_CalculateBitrate(frequency_hz, handle->extend.clock_source, &bitrate);
-
-	if (err != FSP_SUCCESS) {
-		PX4_ERR("R_SPI_B_CalculateBitrate(%lu) failed (%d)", (unsigned long)frequency_hz, err);
-		return -1;
-	}
-
-	handle->extend.spck_div = bitrate;
-	handle->current_speed_hz = frequency_hz;
-
-	return rzv_spi_reopen(handle);
 }
 
 static spi_bit_width_t rzv_spi_get_bit_width(const rzv_spi_backend_t *handle)
@@ -333,9 +377,18 @@ static void rzv_spi_copy_from_bounce(void *dest, const void *src, size_t byte_co
 	R_BSP_CacheCleanRangeData(dest, (uint32_t)byte_count);
 }
 
-int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const void *tx, void *rx, size_t length_bytes)
+int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const rzv_spi_xfer_cfg_t *cfg,
+			     const void *tx, void *rx, size_t length_bytes)
 {
-	if ((handle == NULL) || !handle->opened || (length_bytes == 0U)) {
+	if ((handle == NULL) || (cfg == NULL) || !handle->opened || (length_bytes == 0U)) {
+		return -1;
+	}
+
+	/* Unconditional cap: even DMA-safe caller buffers are rejected above the
+	 * bounce size, preserving the historical cdev-level guard semantics. */
+	if (length_bytes > RZV_SPI_BOUNCE_LEN) {
+		PX4_ERR("SPI transfer len %u exceeds max %u", (unsigned)length_bytes,
+			(unsigned)RZV_SPI_BOUNCE_LEN);
 		return -1;
 	}
 
@@ -359,6 +412,13 @@ int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const void *tx, void *rx
 
 		PX4_DEBUG("SPI mutex retry %d/%d", retry_count, max_retries);
 		vTaskDelay(pdMS_TO_TICKS(1));  /* Brief yield before retry */
+	}
+
+	/* Device settings (SSL/mode/speed/bits) are applied inside the same
+	 * critical section as the transfer itself. */
+	if (rzv_spi_apply_cfg_locked(handle, cfg) != 0) {
+		xSemaphoreGive(g_spi_mutex);
+		return -1;
 	}
 
 	const size_t byte_count = length_bytes;
@@ -405,15 +465,8 @@ int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const void *tx, void *rx
 		use_rx_bounce = true;
 	}
 
-	if ((use_tx_bounce && byte_count > RZV_SPI_BOUNCE_LEN)
-	    || (use_rx_bounce && byte_count > RZV_SPI_BOUNCE_LEN)) {
-		PX4_ERR("SPI bounce buffer insufficient: %u bytes (tx_bounce=%d rx_bounce=%d)",
-			(unsigned)byte_count,
-			use_tx_bounce ? 1 : 0,
-			use_rx_bounce ? 1 : 0);
-		xSemaphoreGive(g_spi_mutex);
-		return -1;
-	}
+	/* byte_count <= RZV_SPI_BOUNCE_LEN is guaranteed by the unconditional
+	 * cap at function entry, so the bounce buffers always fit. */
 
 	const void *tx_ptr = tx;
 	void *rx_ptr = rx;
@@ -489,6 +542,13 @@ int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const void *tx, void *rx
 	}
 
 	PX4_ERR("  tx=%p rx=%p tx_bounce=%p rx_bounce=%p", tx_ptr, rx_ptr, g_spi_tx_bounce, g_spi_rx_bounce);
+
+	/* Never hand a possibly-stuck peripheral to the next caller: reset it now,
+	 * or mark it so the next transfer reopens before touching registers. */
+	if (rzv_spi_reopen(handle) != 0) {
+		handle->needs_reopen = true;
+	}
+
 	xSemaphoreGive(g_spi_mutex);
 	return -1;
 }

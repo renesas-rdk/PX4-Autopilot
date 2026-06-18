@@ -38,7 +38,7 @@ struct sq_entry_s
 #include <cstdint>
 #include <string>
 #include "openamp_rpc_client.h"
-#include "platform/rzv_sdram_layout.h"
+#include "rzv_sdram_layout.h"
 
 #ifndef RC_BOARD_DEFAULTS_CMDS_PATH
 #error "RC_BOARD_DEFAULTS_CMDS_PATH must be defined to embed rc.board_defaults.cmds"

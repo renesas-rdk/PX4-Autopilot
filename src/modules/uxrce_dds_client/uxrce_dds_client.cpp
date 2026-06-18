@@ -45,6 +45,7 @@
 #include <ucdr/microcdr.h>
 
 #if defined(__PX4_FREERTOS)
+#include <inttypes.h>
 #include "px4_platform_common/log.h"
 #include "uxr/client/core/session/session.h"
 #include "openamp_transport.h"
@@ -63,6 +64,9 @@ extern "C" {
 #include <fcntl.h>
 #endif
 #include <stdlib.h>
+#if defined(__PX4_FREERTOS)
+#include <errno.h>
+#endif
 #if !defined(__PX4_FREERTOS)
 #include <unistd.h>
 #endif /* __PX4_FREERTOS */
@@ -875,15 +879,13 @@ void UxrceddsClient::run()
 		bool had_ping_reply = false;
 		uint32_t last_num_payload_sent{};
 		uint32_t last_num_payload_received{};
+		// Reset on every (re)connect so DDS re-discovery after reconnect (~5-10s)
+		// doesn't immediately trigger a false "data path stalled" event.
+		hrt_abstime last_data_rx = hrt_absolute_time();
 #endif /* __PX4_FREERTOS */
 		int poll_error_counter = 0;
 #if defined(__PX4_FREERTOS)
-
-#if defined(__PX4_FREERTOS)
 		_subs->init(&session, _reliable_out, _reliable_in, _best_effort_in, _participant_id, _client_namespace);
-#else
-		_subs->init();
-#endif /* __PX4_FREERTOS */
 		_subs_initialized = true;
 
 		PX4_DEBUG("Session established - connection active");
@@ -918,10 +920,20 @@ void UxrceddsClient::run()
 					// poll error
 					if (poll_error_counter < 10 || poll_error_counter % 50 == 0) {
 						// prevent flooding
+#if defined(__PX4_FREERTOS)
+						PX4_ERR("ERROR while polling uorbs: %d (errno=%d)", poll, errno);
+#else
 						PX4_ERR("ERROR while polling uorbs: %d", poll);
+#endif
 					}
 
 					poll_error_counter++;
+#if defined(__PX4_FREERTOS)
+					// Retry orb_subscribe for any topics that failed at init (CDev not yet
+					// registered). Also sleep to prevent a tight loop when all fds are -1.
+					_subs->reinit_failed_subs();
+					px4_usleep(1000);
+#endif
 				}
 			}
 
@@ -988,19 +1000,22 @@ void UxrceddsClient::run()
 			// Periodically print transport status for debugging
 			if (_transport == Transport::Custom && hrt_elapsed_time(&last_transport_status) > 5_s) {
 				last_transport_status = now;
-				// Call with proper C linkage
-				// px4_custom_transport_print_status();
+				px4_custom_transport_print_status();
+				PX4_INFO("DDS: tx_rate=%i rx_rate=%i payload_sent=%" PRIu32,
+				         _last_payload_tx_rate, _last_payload_rx_rate, _subs->num_payload_sent);
 			}
 
 			// Data path health monitoring - track last successful RX
-			static hrt_abstime last_data_rx = hrt_absolute_time();
 			if (_last_payload_rx_rate > 0) {
 				last_data_rx = now;
 			}
 
-			// Detect data path stall (no RX for 5s despite TX)
-			if ((_last_payload_tx_rate > 0) && (hrt_elapsed_time(&last_data_rx) > 5_s)) {
-				PX4_WARN("Data path stalled: TX active but no RX for 5s, reconnecting");
+			// Detect data path stall: no RX for 15s despite TX.
+			// 15s (not 5s) gives FastDDS re-discovery time after reconnect — the
+			// previous 5s threshold caused a false-stall loop where each reconnect
+			// triggered DDS re-discovery (~5-10s gap) → immediate re-stall.
+			if ((_last_payload_tx_rate > 0) && (hrt_elapsed_time(&last_data_rx) > 15_s)) {
+				PX4_WARN("Data path stalled: TX active but no RX for 15s, reconnecting");
 				_connected = false;
 			}
 
