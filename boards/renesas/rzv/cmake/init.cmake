@@ -34,7 +34,7 @@ set(RZV_INCLUDE_DIRS
     ${RZV_WORKSPACE_ROOT}/rzv_gen
     ${RZV_WORKSPACE_ROOT}/rzv/aws/FreeRTOS/FreeRTOS/Source/include
     ${RZV_WORKSPACE_ROOT}/rzv/aws/FreeRTOS/FreeRTOS-Plus/Source/FreeRTOS-Plus-Common/include
-    # Platform FreeRTOS+POSIX shim (freertos-port).
+    # B1: platform FreeRTOS+POSIX shim (freertos-port); subpaths identical to the old in-repo copy.
     ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port/include
     ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port/include/portable
     ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port/include/FreeRTOS_POSIX

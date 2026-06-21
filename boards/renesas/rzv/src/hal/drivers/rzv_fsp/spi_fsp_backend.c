@@ -201,6 +201,21 @@ int rzv_spi_backend_init(rzv_spi_backend_t *handle, uint8_t bus)
 		return -1;
 	}
 
+	/* Force a clean RSPI peripheral block before (re-)opening.
+	 *
+	 * On a WARM CR8 restart (Linux remoteproc dynamic reload, or a CA55 reboot that
+	 * re-loads CR8 — the sensors stay powered) the FSP control block is fresh (CR8
+	 * RAM is zeroed at reset), so R_SPI_B_Close() sees it as "not open" and no-ops —
+	 * leaving the RSPI hardware block in whatever stale FIFO/DMA state the previous
+	 * firmware instance left it in. The ICM-45688 then probes OK but its FIFO reads
+	 * time out ("no valid data"), which looked like the sensor needing a physical
+	 * power-cycle but was really the master-side peripheral. An explicit MODULE_STOP
+	 * here (R_SPI_B_Open below re-STARTs the module) gives a clean block on every
+	 * start. Harmless on cold boot (block is already off). Validated: 3/3 warm
+	 * reloads read gravity on all three IMUs (vs accel TIMEOUT without this). */
+	R_BSP_MODULE_STOP(FSP_IP_RSPI, g_spi_imu_cfg.channel);
+	R_BSP_SoftwareDelay(500, BSP_DELAY_UNITS_MICROSECONDS);
+
 	memset(handle, 0, sizeof(*handle));
 	rzv_spi_reset_event_state();
 

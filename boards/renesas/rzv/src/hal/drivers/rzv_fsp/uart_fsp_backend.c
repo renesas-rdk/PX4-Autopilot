@@ -441,6 +441,13 @@ int rzv_uart_backend_init(rzv_uart_backend_t *handle, uint8_t logical_channel)
 		return -1;
 	}
 
+	/* Force a clean SCI (UART) channel before open — same rationale as the SPI/I2C
+	 * backends: on a WARM CR8 restart the fresh FSP ctrl makes R_SCI_B_UART_Close
+	 * no-op, leaving stale SCI/FIFO/DMA state. Per-channel MODULE_STOP (Open re-STARTs
+	 * it) gives a clean block; harmless on cold boot. */
+	R_BSP_MODULE_STOP(FSP_IP_SCI, handle->config.channel);
+	R_BSP_SoftwareDelay(500, BSP_DELAY_UNITS_MICROSECONDS);
+
 	fsp_err_t err = R_SCI_B_UART_Open(handle->ctrl, &handle->config);
 
 	if (err != FSP_SUCCESS) {

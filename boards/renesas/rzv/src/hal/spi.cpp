@@ -72,17 +72,6 @@ constexpr px4_spi_bus_t px4_spi_buses[SPI_BUS_MAX_BUS_ITEMS] = {
 				.devid = PX4_SPIDEV_ID(PX4_SPI_DEVICE_ID, 3),
 				.devtype_driver = DRV_IMU_DEVTYPE_ICM45686,
 			},
-			{
-				// MPU9250 9-axis IMU (legacy board revision), on SSL0.
-				// Coexists with ICM #1: both target SSL0 (cs_gpio=0 → ssl_index 0;
-				// ICM #1 cs_gpio=1 → ssl_index 0) but only ONE IMU is populated per
-				// board, and the cdev paths differ (/dev/spidev0.0x24 vs .1).
-				// SPIBusIterator selects this entry by devtype for `mpu9250 start`.
-				.cs_gpio = 0,                          // CS managed by FSP (SPI_B SSL0)
-				.drdy_gpio = BSP_IO_PORT_05_PIN_00,    // Data Ready: Port 5, Pin 0
-				.devid = PX4_SPIDEV_ID(PX4_SPI_DEVICE_ID, DRV_IMU_DEVTYPE_MPU9250),
-				.devtype_driver = DRV_IMU_DEVTYPE_MPU9250,
-			},
 		},
 		.power_enable_gpio = 0,       // No software power control (always on)
 		.bus = 0,                     // SPI_B0 (FSP instance)

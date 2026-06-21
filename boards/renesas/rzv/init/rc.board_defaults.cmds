@@ -39,19 +39,9 @@ param set GPS_SAT_INFO      1
 param set COM_FLTMODE1      8
 param set COM_FLTMODE4      1
 param set COM_FLTMODE6      7
-# === OFFBOARD-loss failsafe (indoor ROS2 offboard demo) ===
-# When the OFFBOARD setpoint/heartbeat stream stops (node death, att-stale stop-heartbeat,
-# graph-guard handoff), PX4 must fail HARD, not coast in Position. For the headball demo a
-# dead controller = abort = Disarm (human safety), never a hold.
-# COM_OBL_RC_ACT default 0 (Position) → 7 (Disarm).
-param set COM_OBL_RC_ACT    7
-# COM_OF_LOSS_T default 1.0s. 0.5s: low enough to disarm promptly after the node dies, high
-# enough not to false-trip on a single dropped frame. Verify time-to-disarm by bag.
-param set COM_OF_LOSS_T     0.5
-# RC_MAP_AUX1=9 is required ONLY for the rc_gate.mode==aux1 branch (CH9 → manual_control_setpoint.aux1).
-# The default demo uses offboard_implicit (FLTMODE switch), so it stays commented. Uncomment +
-# prove CH9 on the RX (listener rc_channels) before using the aux1 branch.
-# param set RC_MAP_AUX1       9
+# Allow Offboard mode without valid XY position/velocity estimate (indoor/no-GPS).
+# Set to 0 for outdoor GPS flight to re-enable the safety check.
+param set COM_OF_NOEST      1
 param set RC1_MAX           2007
 param set RC1_MIN           1015
 param set RC1_TRIM          1510

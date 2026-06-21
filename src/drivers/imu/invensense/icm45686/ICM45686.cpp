@@ -530,18 +530,21 @@ void ICM45686::ProcessAccel(const hrt_abstime &timestamp_sample, const FIFO::DAT
 		// 20 bit hires mode
 		// Sign extension + Accel [19:12] + Accel [11:4] + Accel [3:2] (20 bit extension byte)
 		// Accel data is 18 bit ()
+		// NOTE: parentheses required — '>>' binds tighter than '&', so the
+		// original `HIGHRES_x_LSB & 0xF0 >> 4` evaluated as `& (0xF0>>4)` = `& 0x0F`
+		// (gyro nibble) instead of the accel high nibble [7:4].
 		int32_t accel_x = reassemble_20bit(
 					  fifo[i].ACCEL_DATA_XL,
 					  fifo[i].ACCEL_DATA_XH,
-					  fifo[i].HIGHRES_X_LSB & 0xF0 >> 4);
+					  (fifo[i].HIGHRES_X_LSB & 0xF0) >> 4);
 		int32_t accel_y = reassemble_20bit(
 					  fifo[i].ACCEL_DATA_YL,
 					  fifo[i].ACCEL_DATA_YH,
-					  fifo[i].HIGHRES_Y_LSB & 0xF0 >> 4);
+					  (fifo[i].HIGHRES_Y_LSB & 0xF0) >> 4);
 		int32_t accel_z = reassemble_20bit(
 					  fifo[i].ACCEL_DATA_ZL,
 					  fifo[i].ACCEL_DATA_ZH,
-					  fifo[i].HIGHRES_Z_LSB & 0xF0 >> 4);
+					  (fifo[i].HIGHRES_Z_LSB & 0xF0) >> 4);
 
 		// sample invalid if -524288
 		if (accel_x != -524288 && accel_y != -524288 && accel_z != -524288) {

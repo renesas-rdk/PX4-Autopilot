@@ -8,6 +8,7 @@ add_library(drivers_rzv_fsp STATIC
     rzv_fsp/spi_fsp_backend.c
     rzv_fsp/i2c_fsp_backend.c
     rzv_fsp/uart_fsp_backend.c
+    rzv_fsp/rzv_debug_console.c
     rzv_fsp/uart_openamp_backend.c
     rzv_fsp/uart_rc_ringbuffer.c
     rzv_fsp/uart_channel_map.c

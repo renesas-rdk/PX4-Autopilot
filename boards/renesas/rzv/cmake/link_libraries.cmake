@@ -7,8 +7,8 @@
 # Link FreeRTOS kernel and minimal POSIX wrapper
 
 set(FREERTOS_ROOT ${RZV_WORKSPACE_ROOT}/rzv/aws/FreeRTOS/FreeRTOS/Source)
-# Consume the platform FreeRTOS+POSIX shim (freertos-port). Sources live under
-# posix-shim/; the include tree layout is otherwise standard.
+# B1: consume the platform FreeRTOS+POSIX shim (freertos-port) instead of the in-repo copy.
+# Sources live under posix-shim/ (was source/); include tree layout is otherwise identical.
 set(FREERTOS_PORT_ROOT ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port)
 
 # Build FreeRTOS kernel library
@@ -36,7 +36,7 @@ target_compile_options(freertos_kernel PRIVATE
     -Wno-error=strict-prototypes
 )
 
-# Build minimal FreeRTOS POSIX wrapper (only required functions). The 3 sources come
+# Build minimal FreeRTOS POSIX wrapper (only required functions). B1: the 3 sources come
 # from the platform freertos-port/posix-shim; pthread_mutex.c is the SAME file the firmware ELF
 # compiles (both define __PX4_FREERTOS) — no split-brain. unistd.c is not needed here.
 add_library(freertos_posix_minimal STATIC

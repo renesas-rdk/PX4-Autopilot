@@ -443,6 +443,14 @@ int rzv_i2c_backend_init(rzv_i2c_backend_t *handle, uint8_t bus, uint32_t freque
 		return -1;
 	}
 
+	/* Force a clean SCI (I2C) peripheral block before (re-)opening — see the same
+	 * note in spi_fsp_backend.c. On a WARM CR8 restart the FSP ctrl is fresh so
+	 * R_SCI_B_I2C_Close no-ops and the SCI channel keeps stale state from the
+	 * previous instance; an explicit per-channel MODULE_STOP (Open re-STARTs it)
+	 * gives a clean block. Per-channel MSTP, harmless on cold boot. */
+	R_BSP_MODULE_STOP(FSP_IP_SCI, g_i2c_baro_cfg.channel);
+	R_BSP_SoftwareDelay(500, BSP_DELAY_UNITS_MICROSECONDS);
+
 	memset(handle, 0, sizeof(*handle));
 	rzv_i2c_reset_event_state();
 
