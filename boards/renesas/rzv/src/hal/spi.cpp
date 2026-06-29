@@ -54,21 +54,21 @@ constexpr px4_spi_bus_t px4_spi_buses[SPI_BUS_MAX_BUS_ITEMS] = {
 			{
 				// ICM-45688 IMU #1 (SSL0)
 				.cs_gpio = 1,        // logical CS index -> SSL0
-				.drdy_gpio = 0,      // TBD-HW: DRDY pad; 0 = polling fallback
+				.drdy_gpio = BSP_IO_PORT_05_PIN_00,  // DRDY SSL0 = P50 (FIFO-watermark INT1, routed via micro_hal ch0)
 				.devid = PX4_SPIDEV_ID(PX4_SPI_DEVICE_ID, 1),
 				.devtype_driver = DRV_IMU_DEVTYPE_ICM45686,
 			},
 			{
 				// ICM-45688 IMU #2 (SSL1)
 				.cs_gpio = 2,        // logical CS index -> SSL1
-				.drdy_gpio = 0,      // TBD-HW
+				.drdy_gpio = BSP_IO_PORT_10_PIN_00,  // DRDY SSL1 = PA0 (FIFO-watermark INT1, routed via micro_hal ch1)
 				.devid = PX4_SPIDEV_ID(PX4_SPI_DEVICE_ID, 2),
 				.devtype_driver = DRV_IMU_DEVTYPE_ICM45686,
 			},
 			{
 				// ICM-45688 IMU #3 (SSL2)
 				.cs_gpio = 3,        // logical CS index -> SSL2
-				.drdy_gpio = 0,      // TBD-HW
+				.drdy_gpio = BSP_IO_PORT_07_PIN_04,  // DRDY SSL2 = P74 (FIFO-watermark INT1, routed via micro_hal ch2)
 				.devid = PX4_SPIDEV_ID(PX4_SPI_DEVICE_ID, 3),
 				.devtype_driver = DRV_IMU_DEVTYPE_ICM45686,
 			},

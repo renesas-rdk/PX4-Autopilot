@@ -255,7 +255,11 @@ static param_t param_find_internal(const char *name, bool notification)
 		const unsigned fail_index = g_param_find_failures.fetch_add(1);
 
 		if (fail_index < 16) {
-			PX4_WARN("[THRONE][PARAM] find failed for '%s'", name);
+			// A failed param_find is normal: modules probe for optional/conditional params
+			// (e.g. PWM_MAIN_* for output channels this airframe does not have). Keep it at
+			// debug level so it is available when raising the log level but does not spam the
+			// console on every boot.
+			PX4_DEBUG("[THRONE][PARAM] find failed for '%s'", name);
 		}
 	}
 

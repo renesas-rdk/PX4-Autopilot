@@ -65,31 +65,45 @@ static constexpr UBaseType_t drdy_poll_priority()
 namespace
 {
 
-static bsp_io_port_pin_t detect_configured_irq_pin()
+/*
+ * DRDY hardware-IRQ channel map. Each IMU data-ready line is wired to a distinct
+ * r_intc_tint external-IRQ channel configured in e2studio (g_external_irqN, with
+ * TINT Source = the pin below, Falling edge, callback mpu_drdy_callback). This must
+ * stay in sync with both the FSP pin configuration AND px4_spi_buses[].drdy_gpio.
+ *
+ *   ch0  g_external_irq0  P50 (BSP_IO_PORT_05_PIN_00, 0x0500)  SSL0 / IMU#1
+ *   ch1  g_external_irq1  PA0 (BSP_IO_PORT_10_PIN_00, 0x0A00)  SSL1 / IMU#2
+ *   ch2  g_external_irq2  P74 (BSP_IO_PORT_07_PIN_04, 0x0704)  SSL2 / IMU#3
+ *
+ * Pins not listed here fall back to the GPIO polling task (still functional, just
+ * higher CPU and coarser timing).
+ */
+struct DrdyIrqChannel {
+	uint32_t                       portpin;   // bsp_io_port_pin_t value (lower 16 bits)
+	const external_irq_instance_t *instance;
+	uint32_t                       channel;   // external_irq_callback_args_t.channel
+};
+
+static const DrdyIrqChannel g_drdy_irq_channels[] = {
+	{ 0x0500u, &g_external_irq0, 0u },
+	{ 0x0A00u, &g_external_irq1, 1u },
+	{ 0x0704u, &g_external_irq2, 2u },
+};
+
+static constexpr size_t DRDY_IRQ_CHANNEL_COUNT =
+	sizeof(g_drdy_irq_channels) / sizeof(g_drdy_irq_channels[0]);
+
+static const DrdyIrqChannel *find_irq_channel_by_pin(uint32_t pinset)
 {
-	for (int bus = 0; bus < SPI_BUS_MAX_BUS_ITEMS; ++bus) {
-		const px4_spi_bus_t &cfg = px4_spi_buses[bus];
+	const uint32_t portpin = pinset & 0xFFFFu;
 
-		if (cfg.bus < 0) {
-			continue;
-		}
-
-		for (int dev = 0; dev < SPI_BUS_MAX_DEVICES; ++dev) {
-			const uint32_t drdy_gpio = cfg.devices[dev].drdy_gpio;
-
-			if (drdy_gpio != 0) {
-				return static_cast<bsp_io_port_pin_t>(drdy_gpio);
-			}
+	for (const auto &ch : g_drdy_irq_channels) {
+		if (ch.portpin == portpin) {
+			return &ch;
 		}
 	}
 
-	return static_cast<bsp_io_port_pin_t>(0);
-}
-
-static bsp_io_port_pin_t configured_irq_pin()
-{
-	static const bsp_io_port_pin_t pin = detect_configured_irq_pin();
-	return pin;
+	return nullptr;
 }
 
 struct DrdyClient {
@@ -118,8 +132,9 @@ struct DrdyClient {
 
 static constexpr size_t MAX_DRDY_CLIENTS = 6;
 static DrdyClient g_drdy_clients[MAX_DRDY_CLIENTS];
-static std::atomic<DrdyClient *> g_irq_client{nullptr};
-static bool g_irq_open{false};
+// One client + open-flag per hardware IRQ channel (indexed by DrdyIrqChannel.channel).
+static std::atomic<DrdyClient *> g_irq_client_by_channel[DRDY_IRQ_CHANNEL_COUNT] {};
+static bool g_irq_open_by_channel[DRDY_IRQ_CHANNEL_COUNT] {};
 
 static void drdy_deferred_task(void *param)
 {
@@ -150,14 +165,13 @@ static inline bsp_io_port_pin_t resolve_pin(uint32_t pinset)
 
 static inline bsp_io_port_pin_t irq_supported_pin()
 {
-	return configured_irq_pin();
+	// First mapped channel — used only for the diagnostic WARN below.
+	return static_cast<bsp_io_port_pin_t>(g_drdy_irq_channels[0].portpin);
 }
 
 static bool pin_supports_hw_irq(uint32_t pinset)
 {
-	const bsp_io_port_pin_t pin = irq_supported_pin();
-	const uint32_t requested = pinset_to_portpin(pinset);
-	return (pin != static_cast<bsp_io_port_pin_t>(0)) && (static_cast<uint32_t>(pin) == requested);
+	return find_irq_channel_by_pin(pinset) != nullptr;
 }
 
 static inline void signal_poll_stop(DrdyClient *client)
@@ -322,49 +336,67 @@ static int enable_hardware_irq(DrdyClient *client)
 		return -EINVAL;
 	}
 
-	DrdyClient *current = g_irq_client.load(std::memory_order_acquire);
+	const DrdyIrqChannel *ch = find_irq_channel_by_pin(client->pinset);
+
+	if (!ch) {
+		return -ENOTSUP;
+	}
+
+	std::atomic<DrdyClient *> &slot = g_irq_client_by_channel[ch->channel];
+	DrdyClient *current = slot.load(std::memory_order_acquire);
 
 	if (current && current != client) {
 		return -EBUSY;
 	}
 
-	if (!g_irq_open) {
+	if (!g_irq_open_by_channel[ch->channel]) {
 		/* Ensure GTM0 is initialized before the first DRDY fires so that
 		 * mpu_drdy_callback() sees full-resolution timestamps instead of
-		 * the 1 ms FreeRTOS-tick fallback (C2 race fix).
+		 * the 1 ms FreeRTOS-tick fallback (C2 race fix). Idempotent.
 		 */
 		rzv_hrt_init();
 
-		fsp_err_t err = g_external_irq0.p_api->open(g_external_irq0.p_ctrl, g_external_irq0.p_cfg);
+		fsp_err_t err = ch->instance->p_api->open(ch->instance->p_ctrl, ch->instance->p_cfg);
 
 		if (FSP_SUCCESS != err) {
 			return -EIO;
 		}
 
-		err = g_external_irq0.p_api->enable(g_external_irq0.p_ctrl);
+		err = ch->instance->p_api->enable(ch->instance->p_ctrl);
 
 		if (FSP_SUCCESS != err) {
-			g_external_irq0.p_api->close(g_external_irq0.p_ctrl);
+			ch->instance->p_api->close(ch->instance->p_ctrl);
 			return -EIO;
 		}
 
-		g_irq_open = true;
+		g_irq_open_by_channel[ch->channel] = true;
 	}
 
-	g_irq_client.store(client, std::memory_order_release);
+	slot.store(client, std::memory_order_release);
 	stop_poll_task(client);
-	PX4_DEBUG("DRDY hardware IRQ enabled for pinset=0x%08lx", (unsigned long)client->pinset);
+	PX4_DEBUG("DRDY hardware IRQ ch%lu enabled for pinset=0x%08lx",
+		  (unsigned long)ch->channel, (unsigned long)client->pinset);
 	return 0;
 }
 
-static void disable_hardware_irq()
+static void disable_hardware_irq(DrdyClient *client)
 {
-	g_irq_client.store(nullptr, std::memory_order_release);
+	if (!client) {
+		return;
+	}
 
-	if (g_irq_open) {
-		(void)g_external_irq0.p_api->disable(g_external_irq0.p_ctrl);
-		(void)g_external_irq0.p_api->close(g_external_irq0.p_ctrl);
-		g_irq_open = false;
+	const DrdyIrqChannel *ch = find_irq_channel_by_pin(client->pinset);
+
+	if (!ch) {
+		return;
+	}
+
+	g_irq_client_by_channel[ch->channel].store(nullptr, std::memory_order_release);
+
+	if (g_irq_open_by_channel[ch->channel]) {
+		(void)ch->instance->p_api->disable(ch->instance->p_ctrl);
+		(void)ch->instance->p_api->close(ch->instance->p_ctrl);
+		g_irq_open_by_channel[ch->channel] = false;
 	}
 }
 
@@ -375,17 +407,19 @@ static void disable_hardware_irq()
  */
 extern "C" void mpu_drdy_callback(external_irq_callback_args_t *p_args)
 {
-	(void)p_args;
 	uint64_t now = hrt_absolute_time();
 	BaseType_t higher_priority_woken = pdFALSE;
 
-	DrdyClient *client = g_irq_client.load(std::memory_order_acquire);
+	// Route to the client registered on the firing channel (3 IMUs = 3 channels).
+	if (p_args && (p_args->channel < DRDY_IRQ_CHANNEL_COUNT)) {
+		DrdyClient *client = g_irq_client_by_channel[p_args->channel].load(std::memory_order_acquire);
 
-	if (client) {
-		// Push timestamp into ring buffer (one slot per ISR pulse).
-		uint32_t widx = client->drdy_ts_write_idx.fetch_add(1, std::memory_order_relaxed);
-		client->drdy_timestamps[widx % DrdyClient::DRDY_TS_BUF_SIZE] = now;
-		notify_client_from_isr(client, &higher_priority_woken);
+		if (client) {
+			// Push timestamp into ring buffer (one slot per ISR pulse).
+			uint32_t widx = client->drdy_ts_write_idx.fetch_add(1, std::memory_order_relaxed);
+			client->drdy_timestamps[widx % DrdyClient::DRDY_TS_BUF_SIZE] = now;
+			notify_client_from_isr(client, &higher_priority_woken);
+		}
 	}
 
 	portYIELD_FROM_ISR(higher_priority_woken);
@@ -542,11 +576,7 @@ extern "C" int rzv_sensor_hal_configure_drdy(uint32_t pinset, bool risingedge, b
 		return -EINVAL;
 	}
 
-	DrdyClient *current = g_irq_client.load(std::memory_order_acquire);
-
-	if (current == client) {
-		disable_hardware_irq();
-	}
+	disable_hardware_irq(client);
 
 	stop_poll_task(client);
 	destroy_deferred_task(client);

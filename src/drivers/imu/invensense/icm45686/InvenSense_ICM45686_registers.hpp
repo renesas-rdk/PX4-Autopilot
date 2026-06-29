@@ -55,7 +55,15 @@ static constexpr uint8_t Bit5 = (1 << 5);
 static constexpr uint8_t Bit6 = (1 << 6);
 static constexpr uint8_t Bit7 = (1 << 7);
 
+#if defined(__PX4_FREERTOS)
+// RZ/V2H platform: 10 MHz gives SI/timing margin on the shared 3-IMU SPI bus under
+// OpenAMP AXI-fabric contention (24 MHz storms RX overruns). MPU9250 reads its FIFO on
+// this same bus at 10 MHz (SPI_SPEED_SENSOR) stably; a 2 MHz test did not reduce the
+// bad-FIFO-header rate, so SPI clock speed is NOT the source of those events.
+static constexpr uint32_t SPI_SPEED = 10 * 1000 * 1000; // 10 MHz SPI
+#else
 static constexpr uint32_t SPI_SPEED = 24 * 1000 * 1000; // 24 MHz SPI
+#endif
 static constexpr uint8_t DIR_READ = 0x80;
 
 static constexpr uint8_t WHOAMI = 0xE9;
@@ -84,6 +92,7 @@ enum class BANK_0 : uint8_t {
 	FIFO_CONFIG2 = 0x20,
 	FIFO_CONFIG3 = 0x21,
 	FIFO_CONFIG4 = 0x22,
+	TMST_WOM_CONFIG = 0x23,
 	RTC_CONFIG = 0x26,
 	DMP_EXT_SEN_ODR_CFG = 0x27,
 	EDMP_APEX_EN0 = 0x29,
@@ -130,6 +139,25 @@ enum INT1_STATUS0 : uint8_t {
 	INT1_STATUS_AP_DRDY = Bit2,
 	INT1_STATUS_FIFO_THS = Bit1,
 	INT1_STATUS_FIFO_FULL = Bit0,
+};
+
+// INT1_CONFIG0: routes the corresponding status (same bit positions as INT1_STATUS0) to INT1
+enum INT1_CONFIG0_BIT : uint8_t {
+	INT1_STATUS_EN_RESET_DONE = Bit7,
+	INT1_STATUS_EN_AUX1_AGC = Bit6,
+	INT1_STATUS_EN_AP_AGC_RDY = Bit5,
+	INT1_STATUS_EN_AP_FSYNC = Bit4,
+	INT1_STATUS_EN_AP_AUX1_DRDY = Bit3,
+	INT1_STATUS_EN_AP_DRDY = Bit2,
+	INT1_STATUS_EN_FIFO_THS = Bit1,
+	INT1_STATUS_EN_FIFO_FULL = Bit0,
+};
+
+// INT1_CONFIG2
+enum INT1_CONFIG2_BIT : uint8_t {
+	INT1_DRIVE    = Bit2, // 0: push-pull, 1: open drain
+	INT1_MODE     = Bit1, // 0: pulsed, 1: latched
+	INT1_POLARITY = Bit0, // 0: active low, 1: active high
 };
 
 enum ACCEL_CONFIG0_BIT : uint8_t {
@@ -197,6 +225,11 @@ enum FIFO_CONFIG3_BIT : uint8_t {
 enum FIFO_CONFIG4_BIT : uint8_t {
 	FIFO_COMP_EN = Bit2, // FIFO compression enabled
 	FIFO_TMST_FSYNC_EN = Bit1, // Timestamp/FSYNC data inserted into FIFO frame
+};
+
+enum TMST_WOM_CONFIG_BIT : uint8_t {
+	TMST_DELTA_EN = Bit6, // FIFO timestamp field reports delta ticks between frames (not absolute counter)
+	TMST_RESOL = Bit5,    // 0: 1 us/LSB, 1: 16 us/LSB tick resolution
 };
 
 enum RTC_CONFIG_BIT : uint8_t {

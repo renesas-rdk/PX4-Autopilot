@@ -44,6 +44,7 @@ void ICM45686::print_usage()
 	PRINT_MODULE_USAGE_PARAMS_I2C_SPI_DRIVER(false, true);
 	PRINT_MODULE_USAGE_PARAM_INT('R', 0, 0, 35, "Rotation", true);
 	PRINT_MODULE_USAGE_PARAM_INT('C', 0, 0, 35000, "Input clock frequency (Hz)", true);
+	PRINT_MODULE_USAGE_PARAM_FLAG('P', "Force polled (timer) mode — ignore the board DRDY pin", true);
 	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();
 }
 
@@ -54,10 +55,14 @@ extern "C" int icm45686_main(int argc, char *argv[])
 	BusCLIArguments cli{false, true};
 	cli.default_spi_frequency = SPI_SPEED;
 
-	while ((ch = cli.getOpt(argc, argv, "C:R:")) != EOF) {
+	while ((ch = cli.getOpt(argc, argv, "C:PR:")) != EOF) {
 		switch (ch) {
 		case 'C':
 			cli.custom1 = atoi(cli.optArg());
+			break;
+
+		case 'P':
+			cli.custom2 = 1;
 			break;
 
 		case 'R':

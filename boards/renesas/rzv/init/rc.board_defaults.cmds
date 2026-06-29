@@ -22,11 +22,12 @@ param set SDLOG_MODE        -1
 # WARNING: config.txt wins over BSON — QGC changes to these params won't persist.
 # param set SDLOG_PROFILE     17
 # param set SDLOG_UTC_OFFSET  0
-param set SYS_HAS_BARO      1
+# Baro temporarily DISABLED on the new sub-extension board: the 2x ICP-20100 on
+# I2C7 (0x63/0x64) do not work over SCI_B (no clock-stretch). EKF2 uses the TFmini
+# rangefinder as the primary height source (EKF2_HGT_REF=2), so baro is not required.
+# SYS_HAS_BARO + SYS_HAS_MAG are OWNED BY config.txt (SD, step 3) so baro/mag
+# presence changes per session without a firmware rebuild — not set here (no duplicate).
 param set SYS_HAS_GPS       1
-param set SYS_HAS_MAG       1
-param set SYS_HAS_GPS       1
-param set SYS_HAS_MAG       1
 param set GPS_1_CONFIG      201
 # GPS_SAT_INFO: To view satellites info (default 0: disable, 1: enable)
 param set GPS_SAT_INFO      1
@@ -82,23 +83,30 @@ param set COM_RC_IN_MODE    2
 param set SENS_BOARD_X_OFF  2.2
 param set SENS_BOARD_Y_OFF  -2.5
 
-param set CAL_ACC0_ID       2368514
+# IMU calibration IDs HARDCODED for the 3x ICM-45688 on the new sub-extension board.
+# Old MPU9250 cal (2368514 = devtype 0x24) removed — it matched no present sensor and
+# caused "Accel/Gyro inconsistent - check cal". The new ICM45686 (devtype 0x34) ids are
+# computed as device_id=(0x34<<16)|(cs<<8)|(bus<<3)|SPI(2), bus=0, cs=1/2/3:
+#   CS1/SSL0 = 3408130 (0x340102), CS2/SSL1 = 3408386 (0x340202), CS3/SSL2 = 3408642 (0x340302).
+# Accel & gyro of one chip share the same device_id. This is an IDENTITY calibration
+# (offsets default 0, scale 1) just so PX4 recognizes the sensors and stops spamming
+# "uncalibrated". TEMPORARY — run `commander calibrate accel`/`gyro` later for real offsets.
+param set CAL_ACC0_ID       3408130
 param set CAL_ACC0_PRIO     50
-param set CAL_ACC0_XOFF     -0.047
-param set CAL_ACC0_XSCALE   0.996
-param set CAL_ACC0_YOFF     -0.192
-param set CAL_ACC0_YSCALE   1.001
-param set CAL_ACC0_ZOFF     -0.096
-param set CAL_ACC0_ZSCALE   0.986
+param set CAL_ACC1_ID       3408386
+param set CAL_ACC1_PRIO     50
+param set CAL_ACC2_ID       3408642
+param set CAL_ACC2_PRIO     50
 
-param set CAL_BARO0_ID      4159033
-param set CAL_BARO0_PRIO    50
-
-param set CAL_GYRO0_ID      2368514
+param set CAL_GYRO0_ID      3408130
 param set CAL_GYRO0_PRIO    50
-param set CAL_GYRO0_XOFF    -0.027
-param set CAL_GYRO0_YOFF    -0.219
-param set CAL_GYRO0_ZOFF    -0.022
+param set CAL_GYRO1_ID      3408386
+param set CAL_GYRO1_PRIO    50
+param set CAL_GYRO2_ID      3408642
+param set CAL_GYRO2_PRIO    50
+
+# Baro cal removed (baro disabled — see SYS_HAS_BARO above).
+# param set CAL_BARO0_ID      4159033
 
 # MAG calibration should be refreshed after bench verification.
 # This board now boots with MPU9250 AK8963 enabled plus the Holybro M10 external IST8310.
@@ -155,6 +163,16 @@ param set IMU_GYRO_CUTOFF 40
 # vehicle_imu, so they were running at ~83–166 Hz. Set to 400 Hz so vehicle_imu publishes on
 # every gyro sample (~327 Hz), raising EKF2 to ~160–330 Hz and att_ctrl to ~330 Hz.
 param set IMU_INTEG_RATE 400
+# ===== Multi-IMU redundancy (3x ICM-45688) =====
+# EKF2_MULTI_IMU=3: run one EKF2 instance PER IMU (multi-EKF) so a failed/glitching
+# IMU only takes down its own filter; the EKF selector picks the healthiest estimate.
+# SENS_IMU_MODE=0: with multi-EKF active, disable the central sensor voter — each EKF2
+# instance binds its own dedicated IMU (required companion to EKF2_MULTI_IMU>1).
+# NOTE: 3 EKF2 instances ~3x the estimator CPU; verify wq:INS0/EKF load after enabling.
+# EKF2_MULTI_IMU + SENS_IMU_MODE are OWNED BY config.txt (SD, step 3) so the IMU count
+# tracks the icm45686 start lines there without a rebuild — not set here (no duplicate).
+# param set EKF2_MULTI_IMU 3
+# param set SENS_IMU_MODE   0
 # IMU_DGYRO_CUTOFF: D-term derivative LP filter (default 20 Hz)
 #   Reduced to 20 Hz to suppress D-term sawtooth noise from SPI FIFO empty events.
 param set IMU_DGYRO_CUTOFF 30
@@ -283,7 +301,10 @@ param set PWM_MAIN_FAIL4    800
 # EKF2_RNG_CTRL=2: always fuse rangefinder (no altitude/speed gating).
 #   Default mode 1 drops TFmini at speed>1m/s or alt>5m → bad for fast maneuvers.
 param set EKF2_HGT_REF    2
-param set EKF2_BARO_CTRL  1
+# Baro disabled (no working baro fitted yet) — stop EKF2 fusing/expecting baro.
+# When a BMP390L is fitted + verified (rcS starts it via the bmp388 driver @ 0x77) set
+# SYS_HAS_BARO=1 above and flip EKF2_BARO_CTRL=1 here to enable baro as a safety fallback.
+param set EKF2_BARO_CTRL  0
 param set EKF2_BARO_NOISE 10.0
 # EKF2_RNG_CTRL=2: always fuse rangefinder (not conditional).
 # Default=1 (conditional) drops TFmini when speed>1m/s or alt>5m → EKF2 falls back to baro → bad z estimate.

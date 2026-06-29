@@ -28,17 +28,28 @@
 static volatile uint32_t s_status_failures{0};
 static volatile uint32_t s_fallback_calls{0};
 static volatile uint32_t s_monotonic_adjustments{0};
-static volatile uint32_t s_wrap_events{0};
 static volatile bool     s_logged_init{false};
 static volatile bool     s_logged_fail_open{false};
 static volatile bool     s_logged_status_error{false};
 static volatile bool     s_logged_fallback{false};
-static volatile bool     s_logged_timer_stall{false};
+
+// HRT overflow-ISR wrap counter. The GTM0/GTM3 period-overflow IRQ is
+// already enabled at open (cycle_end_irq >= 0; its callback was NULL). We register a
+// callback that bumps this every 1 ms so absolute time = base + wrap*span + position is
+// robust to >1 ms gaps between hw_time_us() calls. The old delta-accumulation lost wraps
+// when not polled often enough -> slow/jumping clock -> uXRCE timesync resets.
+static volatile uint32_t s_wrap_count{0};
+static uint64_t          s_base_us{0};         // offset for continuity across the init switchover
+static timer_callback_args_t s_gtm_cb_mem{};   // callbackSet non-secure storage
+
+extern "C" void rzv_hrt_gtm_overflow_isr(timer_callback_args_t *p_args)
+{
+	(void) p_args;
+	s_wrap_count++;
+}
 
 namespace
 {
-
-static constexpr uint32_t RZV_HRT_STALL_THRESHOLD = 1024U;
 
 static inline hrt_abstime fallback_time_us(bool in_isr)
 {
@@ -129,12 +140,8 @@ static hrt_abstime hw_time_us()
 	static bool init_failed = false;
 	static bool counting_up = true;
 	static uint32_t period_counts = 0;
-	static uint32_t last_position = 0;
-	static uint64_t accumulated_counts = 0;
 	static uint32_t clock_frequency_hz = 0;
 	static uint32_t counter_span = 0;
-	static uint32_t zero_delta_count = 0;
-	static bool timer_stalled = false;
 	static const timer_instance_t *s_hrt_timer = nullptr;
 
 	const uint32_t cpsr_snapshot = read_cpsr();
@@ -155,6 +162,10 @@ static hrt_abstime hw_time_us()
 			}
 
 			(void)candidate->p_api->start(candidate->p_ctrl);
+
+			/* Register the 1 ms period-overflow callback to drive the wrap counter.
+			 * The overflow IRQ is already enabled by open() (cycle_end_irq >= 0). */
+			(void)candidate->p_api->callbackSet(candidate->p_ctrl, rzv_hrt_gtm_overflow_isr, NULL, &s_gtm_cb_mem);
 
 			if (FSP_SUCCESS == candidate->p_api->infoGet(candidate->p_ctrl, &info)) {
 				period_counts = info.period_counts;
@@ -195,10 +206,12 @@ static hrt_abstime hw_time_us()
 
 			if (initialized) {
 				s_hrt_timer = candidate;
+				// Seed wrap counter + base so post-init time is continuous with the
+				// FreeRTOS-tick fallback used before init (no backward jump).
+				s_wrap_count = 0;
+				s_base_us = fallback_time_us(false);
 			}
 
-			last_position = 0;
-			accumulated_counts = 0;
 			exit_critical_raw(critical);
 
 			const bool is_backup = (candidate != &gtm0);
@@ -238,13 +251,25 @@ static hrt_abstime hw_time_us()
 		return ensure_monotonic(fallback_time_us(in_isr));
 	}
 
-	const uint32_t critical = enter_critical_raw();
-
+	// Wrap-counter read. No interrupt mask is needed: the double-read of s_wrap_count around
+	// the counter read detects a 1 ms overflow that lands mid-read (in task context, where the
+	// IPL14 overflow ISR can preempt) and retries. statusGet() is a plain register read, safe
+	// to call concurrently. (In IPL14 ISR context the overflow ISR cannot preempt, so a wrap
+	// pending during the read can momentarily under-count by one span; ensure_monotonic() caps
+	// it and the next call corrects — still strictly better than the old lost-wrap accumulation.)
 	timer_status_t timer_status{};
-	const fsp_err_t status = s_hrt_timer->p_api->statusGet(s_hrt_timer->p_ctrl, &timer_status);
+	fsp_err_t status = FSP_SUCCESS;
+	uint32_t w1 = 0;
+	uint32_t w2 = 0;
+	int guard = 0;
+
+	do {
+		w1 = s_wrap_count;
+		status = s_hrt_timer->p_api->statusGet(s_hrt_timer->p_ctrl, &timer_status);
+		w2 = s_wrap_count;
+	} while ((w1 != w2) && (status == FSP_SUCCESS) && (++guard < 4));
 
 	if (status != FSP_SUCCESS) {
-		exit_critical_raw(critical);
 		__atomic_fetch_add(&s_status_failures, 1U, __ATOMIC_RELAXED);
 		__atomic_fetch_add(&s_fallback_calls, 1U, __ATOMIC_RELAXED);
 
@@ -256,58 +281,10 @@ static hrt_abstime hw_time_us()
 	}
 
 	const uint32_t raw_counter = static_cast<uint32_t>(timer_status.counter);
-
-	if (!initialized || (counter_span == 0U)) {
-		last_position = counting_up ? raw_counter : (counter_span - 1U - raw_counter);
-		exit_critical_raw(critical);
-		return ensure_monotonic(fallback_time_us(in_isr));
-	}
-
 	const uint32_t position = counting_up ? raw_counter : (counter_span - 1U - raw_counter);
-	uint32_t delta_counts;
+	const uint64_t total_counts = (static_cast<uint64_t>(w1) * counter_span) + position;
 
-	if (position >= last_position) {
-		delta_counts = position - last_position;
-
-	} else {
-		delta_counts = (counter_span - last_position) + position;
-		__atomic_fetch_add(&s_wrap_events, 1U, __ATOMIC_RELAXED);
-	}
-
-	last_position = position;
-	accumulated_counts += delta_counts;
-
-	if (delta_counts == 0U) {
-		if (zero_delta_count < UINT32_MAX) {
-			++zero_delta_count;
-		}
-
-		if (zero_delta_count >= RZV_HRT_STALL_THRESHOLD) {
-			timer_stalled = true;
-		}
-
-	} else {
-		zero_delta_count = 0;
-		timer_stalled = false;
-		__atomic_store_n(&s_logged_timer_stall, false, __ATOMIC_RELEASE);
-	}
-
-	const bool stall_active = timer_stalled;
-
-	exit_critical_raw(critical);
-
-	if (stall_active) {
-		__atomic_fetch_add(&s_fallback_calls, 1U, __ATOMIC_RELAXED);
-
-		if (!in_isr && !__atomic_exchange_n(&s_logged_timer_stall, true, __ATOMIC_ACQ_REL)) {
-			PX4_WARN("RZV HRT detected stalled timer, falling back to FreeRTOS tick");
-		}
-
-		return ensure_monotonic(fallback_time_us(in_isr));
-	}
-
-	const hrt_abstime candidate = counts_to_time_us(accumulated_counts, clock_frequency_hz);
-	return ensure_monotonic(candidate);
+	return ensure_monotonic(s_base_us + counts_to_time_us(total_counts, clock_frequency_hz));
 }
 
 } // namespace
@@ -338,8 +315,8 @@ void rzv_hrt_get_diagnostics(rzv_hrt_diagnostics_t *diag)
 	}
 
 	const uint32_t critical = enter_critical_raw();
-	diag->isr_overflows = 0;
-	diag->sw_overflows = s_wrap_events;
+	diag->isr_overflows = s_wrap_count;   // now: 1 ms period-overflow ISR fire count
+	diag->sw_overflows = 0;
 	diag->skip_isr_hits = 0;
 	diag->status_failures = s_status_failures;
 	diag->fallback_calls = s_fallback_calls;

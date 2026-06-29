@@ -91,11 +91,12 @@ extern "C" {
 // Function to check transport status
 void px4_custom_transport_print_status(void) {
     uint32_t current_usage = (rx_write_idx - rx_read_idx);
-    PX4_INFO("Transport status: initialized=%s, bound=%s, sent=%" PRIu32 " bytes, received=%" PRIu32
+    // PX4_DEBUG (was PX4_INFO): silence the 5 s periodic transport spam on the console.
+    PX4_DEBUG("Transport status: initialized=%s, bound=%s, sent=%" PRIu32 " bytes, received=%" PRIu32
              " bytes, errors=%" PRIu32 "/%" PRIu32 ", conn_attempts=%" PRIu32,
              is_initialized ? "yes" : "no", endpoint_bound ? "yes" : "no",
              bytes_sent, bytes_received, send_errors, receive_errors, connection_attempts);
-    PX4_INFO("RX ring: drops=%" PRIu32 ", peak=%" PRIu32 "/%d, current=%" PRIu32,
+    PX4_DEBUG("RX ring: drops=%" PRIu32 ", peak=%" PRIu32 "/%d, current=%" PRIu32,
              rx_buffer_drops, rx_buffer_peak_usage, RX_BUFFER_COUNT, current_usage);
 }
 
@@ -151,7 +152,10 @@ bool px4_custom_transport_open(struct uxrCustomTransport* transport) {
 
     // Check if the endpoint exists and is properly initialized
     if (!rpdev_uxrce) {
-        PX4_ERR("UXRCE RPMsg device is NULL");
+        // Expected during early boot: the client starts (rcS) before the OpenAMP/RPMsg link
+        // to CA55 is up. The caller retries with backoff and escalates if it never connects,
+        // so keep this at debug level instead of spamming the console each attempt.
+        PX4_DEBUG("UXRCE RPMsg device is NULL (OpenAMP not ready yet)");
         return false;
     }
 

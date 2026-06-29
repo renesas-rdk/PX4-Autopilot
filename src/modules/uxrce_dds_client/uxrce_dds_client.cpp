@@ -191,7 +191,9 @@ bool UxrceddsClient::init()
 			return true;
 		}
 
-		PX4_ERR("init custom transport failed");
+		// Expected during early boot until the OpenAMP link to CA55 comes up; the run loop
+		// retries with backoff and escalates to ERROR only if it stays down. Keep at debug.
+		PX4_DEBUG("init custom transport failed (OpenAMP not ready yet)");
 		delete _transport_custom;
 		_transport_custom = nullptr;
         return false;
@@ -817,7 +819,15 @@ void UxrceddsClient::run()
 					retry_count = 10; // Cap at 2^10 = 1024
 				}
 
-				PX4_ERR("init failed (attempt %lu), retrying in %lu ms", (unsigned long)retry_count, (unsigned long)delay_ms);
+				// The first few attempts normally fail while OpenAMP/CA55 is still coming up
+				// (~30 s of 1/2/4/8/16 s backoff); only escalate to ERROR if it stays down.
+				if (retry_count <= 5) {
+					PX4_DEBUG("init failed (attempt %lu), retrying in %lu ms", (unsigned long)retry_count, (unsigned long)delay_ms);
+
+				} else {
+					PX4_ERR("init failed (attempt %lu), retrying in %lu ms", (unsigned long)retry_count, (unsigned long)delay_ms);
+				}
+
 				px4_usleep(delay_ms * 1000);
 #else
 				px4_usleep(1'000'000);
@@ -946,20 +956,26 @@ void UxrceddsClient::run()
 			// time sync session
 			if (_synchronize_timestamps && hrt_elapsed_time(&last_sync_session) > 1_s) {
 
+				// Throttle to 1 Hz on EVERY attempt, not only on converged success. Previously
+				// last_sync_session was updated only inside the converged branch, so before
+				// convergence uxr_sync_session() (a blocking 10ms DDS round-trip) ran every loop
+				// iteration -> floods OpenAMP/RPMsg -> AXI contention (SPI RX overruns) and keeps
+				// timesync from converging.
+				last_sync_session = hrt_absolute_time();
+
 				if (uxr_sync_session(&session, 10) && _timesync.sync_converged()) {
 					//PX4_INFO("synchronized with time offset %-5" PRId64 "ns", session.time_offset);
-					last_sync_session = hrt_absolute_time();
-
 					if (_param_uxrce_dds_syncc.get() > 0) {
 						syncSystemClock(&session);
 					}
 				}
 
 				if (!_timesync_converged && _timesync.sync_converged()) {
-					PX4_INFO("time sync converged");
+					// PX4_DEBUG (was PX4_INFO): cosmetic convergence flap on the shared bus.
+					PX4_DEBUG("time sync converged");
 
 				} else if (_timesync_converged && !_timesync.sync_converged()) {
-					PX4_WARN("time sync no longer converged");
+					PX4_DEBUG("time sync no longer converged");
 				}
 
 				_timesync_converged = _timesync.sync_converged();
@@ -997,11 +1013,12 @@ void UxrceddsClient::run()
 				last_status_update = now;
 			}
 
-			// Periodically print transport status for debugging
+			// Periodically refresh transport status at PX4_DEBUG level (silenced on the
+			// console; use `uxrce_dds_client status` for on-demand transport/DDS rates).
 			if (_transport == Transport::Custom && hrt_elapsed_time(&last_transport_status) > 5_s) {
 				last_transport_status = now;
 				px4_custom_transport_print_status();
-				PX4_INFO("DDS: tx_rate=%i rx_rate=%i payload_sent=%" PRIu32,
+				PX4_DEBUG("DDS: tx_rate=%i rx_rate=%i payload_sent=%" PRIu32,
 				         _last_payload_tx_rate, _last_payload_rx_rate, _subs->num_payload_sent);
 			}
 

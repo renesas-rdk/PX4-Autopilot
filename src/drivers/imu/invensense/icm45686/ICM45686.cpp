@@ -35,6 +35,12 @@
 
 using namespace time_literals;
 
+#if defined(__PX4_FREERTOS)
+// HAL ring (micro_hal.cpp): pop the timestamp captured in the HW DRDY ISR for this pin
+// (returns 0 if none). Lets DataReady() use the true ISR time, not deferred-task time.
+extern "C" uint64_t rzv_sensor_hal_pop_drdy_timestamp(uint32_t pinset);
+#endif
+
 static constexpr int16_t combine(uint8_t msb, uint8_t lsb)
 {
 	return (msb << 8u) | lsb;
@@ -45,30 +51,18 @@ static constexpr uint16_t combine_uint(uint8_t msb, uint8_t lsb)
 	return (msb << 8u) | lsb;
 }
 
-static constexpr int32_t reassemble_20bit(const uint32_t a, const uint32_t b, const uint32_t c)
-{
-	// 0xXXXAABBC
-	uint32_t high   = ((a << 12) & 0x000FF000);
-	uint32_t low    = ((b << 4)  & 0x00000FF0);
-	uint32_t lowest = (c         & 0x0000000F);
-
-	uint32_t x = high | low | lowest;
-
-	if (a & Bit7) {
-		// sign extend
-		x |= 0xFFF00000u;
-	}
-
-	return static_cast<int32_t>(x);
-}
-
-
 ICM45686::ICM45686(const I2CSPIDriverConfig &config) :
 	SPI(config),
 	I2CSPIDriver(config),
+	// custom2 == 1: -P flag — force polled (timer) mode by pretending there is no DRDY pin
+	_drdy_gpio(config.custom2 == 1 ? 0 : config.drdy_gpio),
 	_px4_accel(get_device_id(), config.rotation),
 	_px4_gyro(get_device_id(), config.rotation)
 {
+	if (_drdy_gpio != 0) {
+		_drdy_missed_perf = perf_alloc(PC_COUNT, MODULE_NAME": DRDY missed");
+	}
+
 	if (config.custom1 != 0) {
 		_enable_clock_input = true;
 		_input_clock_freq = config.custom1;
@@ -79,7 +73,15 @@ ICM45686::ICM45686(const I2CSPIDriverConfig &config) :
 		_enable_clock_input = false;
 	}
 
+#if defined(__PX4_FREERTOS)
+	// RZ/V2H: cap the FIFO read rate to a deterministic value regardless of when params
+	// load (PX4Gyroscope reads IMU_GYRO_RATEMAX in its ctor, which on RZV can run before
+	// the deferred param sync, returning a default rather than the configured rate).
+	static constexpr int32_t RZV_IMU_FIFO_RATE_MAX_HZ = 200;
+	ConfigureSampleRate(math::min(_px4_gyro.get_max_rate_hz(), RZV_IMU_FIFO_RATE_MAX_HZ));
+#else
 	ConfigureSampleRate(_px4_gyro.get_max_rate_hz());
+#endif
 }
 
 ICM45686::~ICM45686()
@@ -89,6 +91,8 @@ ICM45686::~ICM45686()
 	perf_free(_fifo_empty_perf);
 	perf_free(_fifo_overflow_perf);
 	perf_free(_fifo_reset_perf);
+	perf_free(_drdy_missed_perf);
+	perf_free(_gyro_spike_perf);
 }
 
 int ICM45686::init()
@@ -105,6 +109,7 @@ int ICM45686::init()
 
 bool ICM45686::Reset()
 {
+	DataReadyInterruptDisable();
 	_state = STATE::RESET;
 	ScheduleClear();
 	ScheduleNow();
@@ -113,6 +118,7 @@ bool ICM45686::Reset()
 
 void ICM45686::exit_and_cleanup()
 {
+	DataReadyInterruptDisable();
 	I2CSPIDriverBase::exit_and_cleanup();
 }
 
@@ -122,12 +128,17 @@ void ICM45686::print_status()
 
 	PX4_INFO("FIFO empty interval: %d us (%.1f Hz)", _fifo_empty_interval_us, 1e6 / _fifo_empty_interval_us);
 	PX4_INFO("Clock input: %s", _enable_clock_input ? "enabled" : "disabled");
+	PX4_INFO("FIFO TMST dt: %.1f us (mode: %s, res: %.2f us, raw: %u)", (double)_fifo_measured_dt_us,
+		 (_tmst_mode == 1) ? "direct" : (_tmst_mode == 2) ? "diff" : "nominal",
+		 (double)_tmst_res_us, (unsigned)_tmst_last_raw);
 
 	perf_print_counter(_bad_register_perf);
 	perf_print_counter(_bad_transfer_perf);
 	perf_print_counter(_fifo_empty_perf);
 	perf_print_counter(_fifo_overflow_perf);
 	perf_print_counter(_fifo_reset_perf);
+	perf_print_counter(_drdy_missed_perf);
+	perf_print_counter(_gyro_spike_perf);
 }
 
 int ICM45686::probe()
@@ -136,9 +147,7 @@ int ICM45686::probe()
 		const uint8_t whoami = RegisterRead(Register::BANK_0::WHO_AM_I);
 
 		if (whoami != WHOAMI) {
-			// RZV: WARN (not DEBUG) so the ICM-45688 WHO_AM_I value is visible
-			// on the console during bring-up before it is added as accepted.
-			PX4_WARN("unexpected WHO_AM_I 0x%02x", whoami);
+			DEVICE_DEBUG("unexpected WHO_AM_I 0x%02x", whoami);
 			return PX4_ERROR;
 		}
 	}
@@ -210,12 +219,36 @@ void ICM45686::RunImpl()
 		_state = STATE::FIFO_READ;
 		FIFOReset();
 
-		ScheduleOnInterval(_fifo_empty_interval_us, _fifo_empty_interval_us);
+		if (DataReadyInterruptConfigure()) {
+			_data_ready_interrupt_enabled = true;
+
+			// backup schedule as a watchdog timeout
+			ScheduleDelayed(100_ms);
+
+		} else {
+			_data_ready_interrupt_enabled = false;
+			ScheduleOnInterval(_fifo_empty_interval_us, _fifo_empty_interval_us);
+		}
 
 		break;
 
 	case STATE::FIFO_READ: {
 			hrt_abstime timestamp_sample = now;
+
+			if (_data_ready_interrupt_enabled) {
+				// scheduled from interrupt if _drdy_timestamp_sample was set as expected
+				const hrt_abstime drdy_timestamp_sample = _drdy_timestamp_sample.fetch_and(0);
+
+				if ((now - drdy_timestamp_sample) < _fifo_empty_interval_us) {
+					timestamp_sample = drdy_timestamp_sample;
+
+				} else {
+					perf_count(_drdy_missed_perf);
+				}
+
+				// push backup schedule back
+				ScheduleDelayed(_fifo_empty_interval_us * 2);
+			}
 
 			bool success = false;
 
@@ -237,9 +270,33 @@ void ICM45686::RunImpl()
 				}
 			}
 
+			if (_data_ready_interrupt_enabled) {
+				// INT1 is latched (RZV TINT misses the short pulse). Read INT1_STATUS0
+				// after draining the FIFO to clear the latch so it re-arms for the next
+				// watermark crossing; otherwise it asserts once and never edges again.
+				RegisterRead(Register::BANK_0::INT1_STATUS0);
+
+				// If the FIFO refilled to/above the watermark during the SPI read, the latched
+				// INT1 won't give the TINT a fresh edge, so drain again now instead of waiting
+				// for the watchdog (avoids a DRDY-missed). Converges: each pass drains.
+				if (FIFOReadCount() >= _fifo_watermark) {
+					ScheduleNow();
+				}
+			}
+
 			if (!success || hrt_elapsed_time(&_last_config_check_timestamp) > 100_ms) {
 				// check configuration registers periodically or immediately following any failure
-				if (RegisterCheck(_register_bank0_cfg[_checked_register_bank0])) {
+				const register_bank0_config_t &checked = _register_bank0_cfg[_checked_register_bank0];
+
+				// The FIFO watermark registers (FIFO_CONFIG1_0/1) are effectively write-only
+				// here: their readback is unreliable (shadow/latch quirk -> occasional 0x00).
+				// They are still force-written in Configure(); they MUST NOT be part of the
+				// periodic RegisterCheck, otherwise a benign 0x00 readback would trigger a full
+				// IMU Reset() mid-flight (~50-100 ms gyro/accel blackout -> EKF starvation).
+				const bool skip_check = (checked.reg == Register::BANK_0::FIFO_CONFIG1_0)
+							|| (checked.reg == Register::BANK_0::FIFO_CONFIG1_1);
+
+				if (skip_check || RegisterCheck(checked)) {
 					_last_config_check_timestamp = now;
 					_checked_register_bank0 = (_checked_register_bank0 + 1) % size_register_bank0_cfg;
 
@@ -271,17 +328,20 @@ void ICM45686::ConfigureSampleRate(int sample_rate)
 
 void ICM45686::ConfigureFIFOWatermark(uint8_t samples)
 {
-	// FIFO watermark threshold in number of bytes
-	const uint16_t fifo_watermark_threshold = samples * sizeof(FIFO::DATA);
+	// ICM-45686 FIFO_WM (FIFO_CONFIG1_0/1) is the watermark in FIFO *records*, compared
+	// against FIFO_COUNT which the datasheet register description reports in packets (the
+	// overflow check also treats the count as records: FIFO::SIZE / sizeof(FIFO::DATA)).
+	// (The upstream value samples * sizeof(FIFO::DATA) is in bytes and exceeds the ~409
+	// record FIFO depth for any real batch, so FIFO_THS would never assert.)
+	const uint16_t fifo_watermark_threshold = samples;
+	_fifo_watermark = fifo_watermark_threshold;
 
 	for (auto &r : _register_bank0_cfg) {
 		if (r.reg == Register::BANK_0::FIFO_CONFIG1_0) {
-			// FIFO_WM[7:0]  FIFO_CONFIG2
-			r.set_bits = fifo_watermark_threshold & 0xFF;
+			r.set_bits = fifo_watermark_threshold & 0xFF;        // FIFO_WM[7:0]
 
 		} else if (r.reg == Register::BANK_0::FIFO_CONFIG1_1) {
-			// FIFO_WM[11:8] FIFO_CONFIG3
-			r.set_bits = (fifo_watermark_threshold >> 8) & 0xFF;
+			r.set_bits = (fifo_watermark_threshold >> 8) & 0xFF; // FIFO_WM[15:8]
 		}
 	}
 }
@@ -303,13 +363,66 @@ void ICM45686::ConfigureCLKIN()
 
 bool ICM45686::Configure()
 {
-	// Set it to little endian first, otherwise the chip doesn't match the manual
-	// which is just utterly confusing.
-	//uint8_t cmd[3] {
-	//    BANK_IPREG_TOP1,
-	//        SREG_CTRL,
-	//    SREG_CTRL_SREG_DATA_ENDIAN_SEL_BIT::SREG_CTRL_SREG_DATA_ENDIAN_SEL_BIG };
-	//transfer(cmd, cmd, sizeof(cmd));
+#if defined(__PX4_FREERTOS)
+	// ── RZ/V2H UI anti-alias low-pass filter (mandatory at the lowered 800 Hz ODR) ───
+	// At ODR 800 Hz the Nyquist is 400 Hz; frame/motor resonance >400 Hz would alias
+	// straight into the control band. The ICM-45686 UI LPF bandwidth is NOT in BANK_0
+	// (no GYRO/ACCEL_CONFIG1 like the 42688P) — it lives in the indirect IPREG space,
+	// reached via the IREG interface (BANK_0 0x7C/0x7D/0x7E = ADDR_HI/ADDR_LO/DATA).
+	// Per the TDK ICM-45686 driver the value is a fraction of ODR: 0x03 = ODR/16, which
+	// at 800 Hz = 50 Hz (mirrors the MPU9250 RZ/V port's 41 Hz DLPF; fixed 3rd order).
+	// Must run after wake (PWR_MGMT0 was set + 30 ms gyro startup in WAIT_FOR_RESET, so
+	// the IPREG clocks are up) and before the FIFO is enabled below. This pairs with the
+	// 800 Hz ODR above; on the upstream 6400 Hz ODR a different BW index would be needed.
+	//   GYRO_UI_LPFBW  = IPREG_SYS1_REG_172 @ 0xA4AC
+	//   ACCEL_UI_LPFBW = IPREG_SYS2_REG_131 @ 0xA583
+	{
+		auto delay_us = [](uint32_t us) {
+			const hrt_abstime t0 = hrt_absolute_time();
+
+			while (hrt_elapsed_time(&t0) < us) { /* short busy-wait, startup only */ }
+		};
+
+		auto write_ipreg = [&](uint16_t addr, uint8_t data) {
+			// IREG burst write: SPI auto-increments 0x7C -> 0x7D -> 0x7E.
+			uint8_t cmd[4] { 0x7C, (uint8_t)((addr >> 8) & 0xFF), (uint8_t)(addr & 0xFF), data };
+			delay_us(4);   // TDK: ~4 us before IREG access (no IREG_DONE poll on this part)
+			transfer(cmd, cmd, sizeof(cmd));
+			delay_us(4);   // TDK: ~4 us after IREG access
+		};
+
+		write_ipreg(0xA4AC, 0x03); // GYRO_UI_LPFBW  = ODR/16 = 50 Hz @ 800 Hz ODR
+		write_ipreg(0xA583, 0x03); // ACCEL_UI_LPFBW = ODR/16 = 50 Hz @ 800 Hz ODR
+		// (readback-verified on RZ/V2H .141 2026-06-26: both read back 0x03)
+
+		auto read_ipreg = [&](uint16_t addr) -> uint8_t {
+			uint8_t cmd_addr[3] { 0x7C, (uint8_t)((addr >> 8) & 0xFF), (uint8_t)(addr & 0xFF) };
+			delay_us(4);
+			transfer(cmd_addr, cmd_addr, sizeof(cmd_addr));
+			delay_us(4);
+			uint8_t cmd_data[2] { static_cast<uint8_t>(0x7E | DIR_READ), 0 };
+			transfer(cmd_data, cmd_data, sizeof(cmd_data));
+			delay_us(4);
+			return cmd_data[1];
+		};
+
+		// Start the internal timestamp counter (SMC_CONTROL_0.TMST_EN, IPREG_TOP1
+		// 0xA258 Bit0 — default 0, so the FIFO TMST field reads all-zero without
+		// this). UpdateMeasuredDt() consumes the field for the true per-sample dt
+		// in polled mode. RMW to preserve TEMP_DIS / clock-select bits.
+		const uint8_t smc0 = read_ipreg(0xA258);
+
+		if ((smc0 & 0x01) == 0) {
+			write_ipreg(0xA258, smc0 | 0x01);
+		}
+	}
+
+	// FIFO TMST field = DELTA ticks between frames at 1 us/LSB
+	// (direct interpretation in UpdateMeasuredDt locks onto res = 1 us).
+	RegisterSetAndClearBits(Register::BANK_0::TMST_WOM_CONFIG,
+				TMST_WOM_CONFIG_BIT::TMST_DELTA_EN,
+				TMST_WOM_CONFIG_BIT::TMST_RESOL);
+#endif /* __PX4_FREERTOS */
 
 	// first set and clear all configured register bits
 	for (const auto &reg_cfg : _register_bank0_cfg) {
@@ -320,6 +433,15 @@ bool ICM45686::Configure()
 	bool success = true;
 
 	for (const auto &reg_cfg : _register_bank0_cfg) {
+		// FIFO_CONFIG1_0/1 (watermark) are effectively write-only here: their readback is
+		// unreliable (shadow/latch quirk -> occasional 0x00), so checking them can fail the
+		// whole configure spuriously. They are force-written below (and in FIFOReset). Skip
+		// them on the initial check too, mirroring the periodic RegisterCheck skip.
+		if ((reg_cfg.reg == Register::BANK_0::FIFO_CONFIG1_0)
+		    || (reg_cfg.reg == Register::BANK_0::FIFO_CONFIG1_1)) {
+			continue;
+		}
+
 		if (!RegisterCheck(reg_cfg)) {
 			success = false;
 		}
@@ -329,6 +451,19 @@ bool ICM45686::Configure()
 	// are ±4000dps for gyroscope and ±32 for accelerometer
 	_px4_accel.set_range(32.f * CONSTANTS_ONE_G);
 	_px4_gyro.set_range(math::radians(4000.f));
+
+	// data is published from the 16-bit FIFO registers (data[19:4]) which always cover the
+	// full range: 1024 LSB/g and 131/16 LSB/dps
+	_px4_accel.set_scale(CONSTANTS_ONE_G / 8192.f * 8.f);
+	_px4_gyro.set_scale(math::radians(1.f / 131.f * 16.f));
+
+	// Force-write the FIFO watermark (records) so the FIFO_THS threshold actually latches.
+	// Per datasheet the threshold takes effect ONLY when the MSByte (FIFO_CONFIG1_1) is
+	// written, and the LSByte must be written first. The table-driven RegisterSetAndClearBits
+	// skips a write when the value is unchanged, so for small watermarks (MSByte == reset 0x00)
+	// the threshold would never latch and INT1 would never assert. Write both explicitly.
+	RegisterWrite(Register::BANK_0::FIFO_CONFIG1_0, _fifo_watermark & 0xFF);
+	RegisterWrite(Register::BANK_0::FIFO_CONFIG1_1, (_fifo_watermark >> 8) & 0xFF);
 
 	return success;
 }
@@ -381,6 +516,44 @@ void ICM45686::RegisterSetAndClearBits(T reg, uint8_t setbits, uint8_t clearbits
 	}
 }
 
+int ICM45686::DataReadyInterruptCallback(int irq, void *context, void *arg)
+{
+	static_cast<ICM45686 *>(arg)->DataReady();
+	return 0;
+}
+
+void ICM45686::DataReady()
+{
+#if defined(__PX4_FREERTOS)
+	// Use the timestamp latched in the HW DRDY ISR (HAL ring), consuming one entry per call so
+	// batched IRQs aren't collapsed to deferred-task time; fall back to now if the ring is empty.
+	const uint64_t isr_ts = rzv_sensor_hal_pop_drdy_timestamp((uint32_t)_drdy_gpio);
+	_drdy_timestamp_sample.store(isr_ts != 0 ? isr_ts : hrt_absolute_time());
+#else
+	_drdy_timestamp_sample.store(hrt_absolute_time());
+#endif
+	ScheduleNow();
+}
+
+bool ICM45686::DataReadyInterruptConfigure()
+{
+	if (_drdy_gpio == 0) {
+		return false;
+	}
+
+	// Setup data ready on falling edge (INT1 is configured pulsed, active low)
+	return px4_arch_gpiosetevent(_drdy_gpio, false, true, true, &DataReadyInterruptCallback, this) == 0;
+}
+
+bool ICM45686::DataReadyInterruptDisable()
+{
+	if (_drdy_gpio == 0) {
+		return false;
+	}
+
+	return px4_arch_gpiosetevent(_drdy_gpio, false, false, false, nullptr, nullptr) == 0;
+}
+
 uint16_t ICM45686::FIFOReadCount()
 {
 	// read FIFO count
@@ -404,6 +577,14 @@ bool ICM45686::FIFORead(const hrt_abstime &timestamp_sample)
 
 	if (fifo_packets == 0) {
 		perf_count(_fifo_empty_perf);
+		return false;
+	}
+
+	if (fifo_packets >= FIFO::SIZE / sizeof(FIFO::DATA)) {
+		// FIFO saturated: in stop-on-full mode newer samples have been dropped, reset for a
+		// clean restart rather than draining a stale backlog
+		perf_count(_fifo_overflow_perf);
+		FIFOReset();
 		return false;
 	}
 
@@ -463,6 +644,7 @@ bool ICM45686::FIFORead(const hrt_abstime &timestamp_sample)
 
 	if (valid_samples > 0) {
 		if (ProcessTemperature(buffer.f, valid_samples)) {
+			UpdateMeasuredDt(buffer.f, valid_samples);
 			ProcessGyro(timestamp_sample, buffer.f, valid_samples);
 			ProcessAccel(timestamp_sample, buffer.f, valid_samples);
 			return true;
@@ -472,9 +654,85 @@ bool ICM45686::FIFORead(const hrt_abstime &timestamp_sample)
 	return false;
 }
 
+void ICM45686::UpdateMeasuredDt(const FIFO::DATA fifo[], const uint8_t samples)
+{
+	if (_enable_clock_input) {
+		return; // CLKIN path computes dt per sample in ProcessAccel/ProcessGyro
+	}
+
+	// Per-sample interval from the FIFO timestamp field on the internal clock.
+	// Neither the field semantics (delta ticks between frames vs free-running
+	// counter) nor the tick resolution is fully documented for this part, so
+	// evaluate direct/diff interpretations across the candidate resolutions
+	// and keep whichever yields plausible ODR periods.
+	static constexpr float RES_CANDIDATES_US[] = {1.f, 16.f, FIFO_TIMESTAMP_SCALING};
+	static constexpr unsigned N_RES = sizeof(RES_CANDIDATES_US) / sizeof(RES_CANDIDATES_US[0]);
+
+	float sum_direct[N_RES] {};
+	unsigned n_direct[N_RES] {};
+	float sum_diff[N_RES] {};
+	unsigned n_diff[N_RES] {};
+	uint16_t prev = 0;
+
+	for (unsigned i = 0; i < samples; i++) {
+		// Swapped as device is in little endian by default.
+		const uint16_t t = combine_uint(fifo[i].Timestamp_L, fifo[i].Timestamp_H);
+		_tmst_last_raw = t;
+
+		for (unsigned r = 0; r < N_RES; r++) {
+			const float d_direct = (float)t * RES_CANDIDATES_US[r];
+
+			if ((d_direct > 0.5f * FIFO_SAMPLE_DT) && (d_direct < 1.5f * FIFO_SAMPLE_DT)) {
+				sum_direct[r] += d_direct;
+				n_direct[r]++;
+			}
+
+			if (i > 0) {
+				const uint16_t dt_ticks = (uint16_t)(t - prev); // uint16 wrap-safe
+				const float d_diff = (float)dt_ticks * RES_CANDIDATES_US[r];
+
+				if ((d_diff > 0.5f * FIFO_SAMPLE_DT) && (d_diff < 1.5f * FIFO_SAMPLE_DT)) {
+					sum_diff[r] += d_diff;
+					n_diff[r]++;
+				}
+			}
+		}
+
+		prev = t;
+	}
+
+	// Pick the interpretation with the most in-range samples (direct preferred on ties).
+	float measured = 0.f;
+	unsigned best_n = 0;
+
+	for (unsigned r = 0; r < N_RES; r++) {
+		if (n_direct[r] > best_n) {
+			best_n = n_direct[r];
+			measured = sum_direct[r] / n_direct[r];
+			_tmst_mode = 1;
+			_tmst_res_us = RES_CANDIDATES_US[r];
+		}
+
+		if (n_diff[r] > best_n) {
+			best_n = n_diff[r];
+			measured = sum_diff[r] / n_diff[r];
+			_tmst_mode = 2;
+			_tmst_res_us = RES_CANDIDATES_US[r];
+		}
+	}
+
+	if (best_n == 0) {
+		return; // keep previous estimate (or nominal), don't poison dt
+	}
+
+	// Low-pass so single-batch noise doesn't jitter the published dt.
+	_fifo_measured_dt_us = 0.9f * _fifo_measured_dt_us + 0.1f * measured;
+}
+
 void ICM45686::FIFOReset()
 {
 	perf_count(_fifo_reset_perf);
+	_drdy_timestamp_sample.store(0);
 
 	// Disable FIFO
 	RegisterClearBits(Register::BANK_0::FIFO_CONFIG3,
@@ -503,6 +761,17 @@ void ICM45686::FIFOReset()
 			FIFO_CONFIG3_BIT::FIFO_GYRO_EN |
 			FIFO_CONFIG3_BIT::FIFO_ACCEL_EN |
 			FIFO_CONFIG3_BIT::FIFO_IF_EN);
+
+	// Insert the 16-bit ODR timestamp into each FIFO frame (consumed by
+	// UpdateMeasuredDt for the true per-sample dt).
+	RegisterSetBits(Register::BANK_0::FIFO_CONFIG4,
+			FIFO_CONFIG4_BIT::FIFO_TMST_FSYNC_EN);
+
+	// Defensively re-apply the FIFO watermark: the bypass/re-enable cycle above may
+	// clear the watermark comparison, and the threshold only takes effect when the
+	// MSByte (FIFO_CONFIG1_1) is (re)written, LSByte first.
+	RegisterWrite(Register::BANK_0::FIFO_CONFIG1_0, _fifo_watermark & 0xFF);
+	RegisterWrite(Register::BANK_0::FIFO_CONFIG1_1, (_fifo_watermark >> 8) & 0xFF);
 }
 
 void ICM45686::ProcessAccel(const hrt_abstime &timestamp_sample, const FIFO::DATA fifo[], const uint8_t samples)
@@ -510,97 +779,30 @@ void ICM45686::ProcessAccel(const hrt_abstime &timestamp_sample, const FIFO::DAT
 	sensor_accel_fifo_s accel{};
 	accel.timestamp_sample = timestamp_sample;
 	accel.samples = 0;
+	accel.dt = _enable_clock_input ? FIFO_SAMPLE_DT : _fifo_measured_dt_us;
 
-	// 19-bits of accelerometer data
-	bool scale_20bit = false;
-
-	// first pass
 	for (int i = 0; i < samples; i++) {
-
-
 		if (_enable_clock_input) {
 			// Swapped as device is in little endian by default.
 			const uint16_t timestamp_fifo = combine_uint(fifo[i].Timestamp_L, fifo[i].Timestamp_H);
 			accel.dt = (float)timestamp_fifo * ((1.f / _input_clock_freq) * 1e6f);
-
-		} else {
-			accel.dt = FIFO_SAMPLE_DT;
 		}
 
-		// 20 bit hires mode
-		// Sign extension + Accel [19:12] + Accel [11:4] + Accel [3:2] (20 bit extension byte)
-		// Accel data is 18 bit ()
-		// NOTE: parentheses required — '>>' binds tighter than '&', so the
-		// original `HIGHRES_x_LSB & 0xF0 >> 4` evaluated as `& (0xF0>>4)` = `& 0x0F`
-		// (gyro nibble) instead of the accel high nibble [7:4].
-		int32_t accel_x = reassemble_20bit(
-					  fifo[i].ACCEL_DATA_XL,
-					  fifo[i].ACCEL_DATA_XH,
-					  (fifo[i].HIGHRES_X_LSB & 0xF0) >> 4);
-		int32_t accel_y = reassemble_20bit(
-					  fifo[i].ACCEL_DATA_YL,
-					  fifo[i].ACCEL_DATA_YH,
-					  (fifo[i].HIGHRES_Y_LSB & 0xF0) >> 4);
-		int32_t accel_z = reassemble_20bit(
-					  fifo[i].ACCEL_DATA_ZL,
-					  fifo[i].ACCEL_DATA_ZH,
-					  (fifo[i].HIGHRES_Z_LSB & 0xF0) >> 4);
+		// The 16-bit FIFO registers hold data[19:4] of the 20-bit hires packet, covering the
+		// full +/-32 g range at 1024 LSB/g (scale set in Configure()). The 20-bit extension
+		// nibble is intentionally unused so the published scale stays constant instead of
+		// toggling with batch content.
+		const int16_t accel_x = combine(fifo[i].ACCEL_DATA_XL, fifo[i].ACCEL_DATA_XH);
+		const int16_t accel_y = combine(fifo[i].ACCEL_DATA_YL, fifo[i].ACCEL_DATA_YH);
+		const int16_t accel_z = combine(fifo[i].ACCEL_DATA_ZL, fifo[i].ACCEL_DATA_ZH);
 
-		// sample invalid if -524288
-		if (accel_x != -524288 && accel_y != -524288 && accel_z != -524288) {
-
-			// It's not enough to check if any values are exceeding the
-			// int16 limits because there might be a rotation applied later.
-			// If a rotation is 45 degrees, the new component can be up to
-			// sqrt(2) longer than one component. This means the number has
-			// to be constrained to fit the int16 which then triggers
-			// clipping.
-			//
-			// Therefore, we set the limits at int16_max/min / sqrt(2) plus
-			// a bit of margin.
-			static constexpr int16_t max_accel = static_cast<int16_t>(INT16_MAX / sqrt(2.f)) - 100;
-			static constexpr int16_t min_accel = static_cast<int16_t>(INT16_MIN / sqrt(2.f)) + 100;
-
-			if (accel_x >= max_accel || accel_x <= min_accel) {
-				scale_20bit = true;
-			}
-
-			if (accel_y >= max_accel || accel_y <= min_accel) {
-				scale_20bit = true;
-			}
-
-			if (accel_z >= max_accel || accel_z <= min_accel) {
-				scale_20bit = true;
-			}
-
-			// least significant bit is always 0)
-			accel.x[accel.samples] = accel_x / 2;
-			accel.y[accel.samples] = accel_y / 2;
-			accel.z[accel.samples] = accel_z / 2;
+		// sample invalid if -32768 (16-bit truncation of the hires invalid marker -524288)
+		if (accel_x != INT16_MIN && accel_y != INT16_MIN && accel_z != INT16_MIN) {
+			accel.x[accel.samples] = accel_x;
+			accel.y[accel.samples] = accel_y;
+			accel.z[accel.samples] = accel_z;
 			accel.samples++;
 		}
-	}
-
-	if (!scale_20bit) {
-		// if highres enabled accel data is always 8192 LSB/g
-		_px4_accel.set_scale(CONSTANTS_ONE_G / 8192.f);
-
-	} else {
-		// 20 bit data scaled to 16 bit (2^4)
-		for (int i = 0; i < samples; i++) {
-			// 20 bit hires mode
-			// Sign extension + Accel [19:12] + Accel [11:4] + Accel [3:2] (20 bit extension byte)
-			// Accel data is 18 bit ()
-			int16_t accel_x = combine(fifo[i].ACCEL_DATA_XL, fifo[i].ACCEL_DATA_XH);
-			int16_t accel_y = combine(fifo[i].ACCEL_DATA_YL, fifo[i].ACCEL_DATA_YH);
-			int16_t accel_z = combine(fifo[i].ACCEL_DATA_ZL, fifo[i].ACCEL_DATA_ZH);
-
-			accel.x[i] = accel_x;
-			accel.y[i] = accel_y;
-			accel.z[i] = accel_z;
-		}
-
-		_px4_accel.set_scale(CONSTANTS_ONE_G / 8192.f * 8.0f);
 	}
 
 	// correct frame for publication
@@ -625,72 +827,68 @@ void ICM45686::ProcessGyro(const hrt_abstime &timestamp_sample, const FIFO::DATA
 	sensor_gyro_fifo_s gyro{};
 	gyro.timestamp_sample = timestamp_sample;
 	gyro.samples = 0;
+	gyro.dt = _enable_clock_input ? FIFO_SAMPLE_DT : _fifo_measured_dt_us;
 
-	// 20-bits of gyroscope data
-	bool scale_20bit = false;
-
-	// first pass
 	for (int i = 0; i < samples; i++) {
-
-
 		if (_enable_clock_input) {
 			// Swapped as device is in little endian by default.
-			uint16_t timestamp_fifo = combine_uint(fifo[i].Timestamp_L, fifo[i].Timestamp_H);
+			const uint16_t timestamp_fifo = combine_uint(fifo[i].Timestamp_L, fifo[i].Timestamp_H);
 			gyro.dt = (float)timestamp_fifo * ((1.f / _input_clock_freq) * 1e6f);
-
-		} else {
-			gyro.dt = FIFO_SAMPLE_DT;
 		}
 
-		// 20 bit hires mode
-		// Gyro [19:12] + Gyro [11:4] + Gyro [3:0] (bottom 4 bits of 20 bit extension byte)
-		int32_t gyro_x = reassemble_20bit(fifo[i].GYRO_DATA_XL, fifo[i].GYRO_DATA_XH, fifo[i].HIGHRES_X_LSB & 0x0F);
-		int32_t gyro_y = reassemble_20bit(fifo[i].GYRO_DATA_YL, fifo[i].GYRO_DATA_YH, fifo[i].HIGHRES_Y_LSB & 0x0F);
-		int32_t gyro_z = reassemble_20bit(fifo[i].GYRO_DATA_ZL, fifo[i].GYRO_DATA_ZH, fifo[i].HIGHRES_Z_LSB & 0x0F);
+		// The 16-bit FIFO registers hold data[19:4] of the 20-bit hires packet, covering the
+		// full +/-4000 dps range (scale set in Configure()). The 20-bit extension nibble is
+		// intentionally unused so the published scale stays constant instead of toggling with
+		// batch content.
+		const int16_t gx = combine(fifo[i].GYRO_DATA_XL, fifo[i].GYRO_DATA_XH);
+		const int16_t gy = combine(fifo[i].GYRO_DATA_YL, fifo[i].GYRO_DATA_YH);
+		const int16_t gz = combine(fifo[i].GYRO_DATA_ZL, fifo[i].GYRO_DATA_ZH);
 
-		// It's not enough to check if any values are exceeding the
-		// int16 limits because there might be a rotation applied later.
-		// If a rotation is 45 degrees, the new component can be up to
-		// sqrt(2) longer than one component. This means the number has
-		// to be constrained to fit the int16 which then triggers
-		// clipping.
-		//
-		// Therefore, we set the limits at int16_max/min / sqrt(2) plus
-		// a bit of margin.
-		static constexpr int16_t max_gyro = static_cast<int16_t>(INT16_MAX / sqrt(2.f)) - 100;
-		static constexpr int16_t min_gyro = static_cast<int16_t>(INT16_MIN / sqrt(2.f)) + 100;
+		// RZ/V2H shared 3-IMU SPI bus corruption filter.
+		// Under OpenAMP/AXI bus contention a corrupted read can still carry a VALID FIFO header
+		// while its payload is garbage (measured on a stationary board: implausible full-/large-
+		// scale gyro, up to ±32767). Upstream ProcessGyro published every sample (no per-sample
+		// validity filter, unlike ProcessAccel), so the garbage reached the EKF and spun the
+		// attitude estimate. Reject corrupt samples two ways:
+		//   1. == INT16_MIN: the invalid marker (mirrors ProcessAccel); left in, the frame-flip
+		//      below would remap it to +INT16_MAX (a full-scale +4000 dps spike).
+		//   2. Rate-step: samples arrive at the fixed ODR, so the change from the previous good
+		//      sample is an angular-acceleration proxy. GYRO_MAX_STEP is set ~1000x above any
+		//      real airframe's angular acceleration, so a sustained high rate (aggressive flight)
+		//      passes untouched — only an abrupt jump (corruption) trips it. This is why a
+		//      rate-STEP filter is used rather than an absolute rate clip.
+		// The reference (_last_gyro_*) is updated from accepted samples only, so a burst of
+		// corrupt samples is compared against the last good value, not against garbage; an escape
+		// hatch re-seeds after GYRO_REJECT_RUN_MAX consecutive rejects so a stale/bad reference
+		// (e.g. a corrupt first sample) cannot lock the gyro stream out indefinitely.
+		static constexpr int GYRO_MAX_STEP = 4096;       // 4096 cnt * 16/131 ~= 500 dps per ODR sample
+		static constexpr int GYRO_REJECT_RUN_MAX = 4;
 
-		if (gyro_x >= max_gyro || gyro_x <= min_gyro) {
-			scale_20bit = true;
+		if (gx == INT16_MIN || gy == INT16_MIN || gz == INT16_MIN) {
+			perf_count(_gyro_spike_perf);
+			continue;
 		}
 
-		if (gyro_y >= max_gyro || gyro_y <= min_gyro) {
-			scale_20bit = true;
+		if (_last_gyro_valid
+		    && (abs((int)gx - _last_gyro_x) > GYRO_MAX_STEP
+			|| abs((int)gy - _last_gyro_y) > GYRO_MAX_STEP
+			|| abs((int)gz - _last_gyro_z) > GYRO_MAX_STEP)) {
+			perf_count(_gyro_spike_perf);
+
+			if (++_gyro_reject_run < GYRO_REJECT_RUN_MAX) {
+				continue;
+			}
+			// else: reference is likely stale/corrupt — fall through and re-seed with this sample
 		}
 
-		if (gyro_z >= max_gyro || gyro_z <= min_gyro) {
-			scale_20bit = true;
-		}
+		_gyro_reject_run = 0;
+		_last_gyro_x = gx; _last_gyro_y = gy; _last_gyro_z = gz;
+		_last_gyro_valid = true;
 
-		gyro.x[gyro.samples] = gyro_x;
-		gyro.y[gyro.samples] = gyro_y;
-		gyro.z[gyro.samples] = gyro_z;
+		gyro.x[gyro.samples] = gx;
+		gyro.y[gyro.samples] = gy;
+		gyro.z[gyro.samples] = gz;
 		gyro.samples++;
-	}
-
-	if (!scale_20bit) {
-		// if highres enabled gyro data is always 131 LSB/dps
-		_px4_gyro.set_scale(math::radians(1.f / 131.f));
-
-	} else {
-		// 20 bit data scaled to 16 bit (2^4)
-		for (int i = 0; i < samples; i++) {
-			gyro.x[i] = combine(fifo[i].GYRO_DATA_XL, fifo[i].GYRO_DATA_XH);
-			gyro.y[i] = combine(fifo[i].GYRO_DATA_YL, fifo[i].GYRO_DATA_YH);
-			gyro.z[i] = combine(fifo[i].GYRO_DATA_ZL, fifo[i].GYRO_DATA_ZH);
-		}
-
-		_px4_gyro.set_scale(math::radians(1.f / 131.f * 16.0f));
 	}
 
 	// correct frame for publication
