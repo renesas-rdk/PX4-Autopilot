@@ -6,8 +6,8 @@
 
 /**
  * @file rzv_debug_console.h
- * @brief Polled debug-console sink over the SCI_B UART1 instance
- *        (g_uart1_debug_tx, TXD1 on pin P52, 115200 8N1).
+ * @brief Polled debug-console sink over the SCI_B UART0 instance
+ *        (g_uart_debug_tx, TXD0 on pin P50, 115200 8N1).
  *
  * Mirrors the CR8 stdout/stderr stream (PX4_INFO / printf, routed through
  * newlib _write fd 1/2 in syscalls.c) out a physical UART so it can be read
@@ -17,15 +17,12 @@
  * early boot before the scheduler, fault handlers) and never enables the
  * TXI interrupt, so it cannot race the FSP async UART path.
  *
- * ┌──────────────────────────────────────────────────────────────────────────┐
- * │ TEMPORARY PIN BORROW (hardware note):                                      │
- * │ The debug-UART TX (TXD1) is on pin P52, which on this board is wired to    │
- * │ the GPS M10 "Safety Switch" line. We are BORROWING that pad for debug TX    │
- * │ only (board→host). While this debug console is in use, the GPS M10 safety  │
- * │ switch on P52 is unavailable. This is a bring-up/debug arrangement — revert │
- * │ the pad to its safety-switch function (or move debug TX to a free UART)     │
- * │ before relying on the safety switch.                                       │
- * └──────────────────────────────────────────────────────────────────────────┘
+ * P50 was previously the ICM-45688 IMU#1 data-ready (DRDY/TINT) pin; freed
+ * once all IMUs moved to polled mode (see spi_fsp_backend.c / config.txt
+ * -P). Debug TX moved here from its former pad P52, which is wired to the
+ * GPS M10 "Safety Switch" line and is now free for that function again
+ * (see GPS_SAFETY_SWITCH in rzv_cfg/fsp_cfg/bsp/bsp_pin_cfg.h) — no more
+ * pin-borrow conflict between the two.
  */
 
 #ifndef RZV_DEBUG_CONSOLE_H_
@@ -37,7 +34,7 @@
 extern "C" {
 #endif
 
-/** Open g_uart1_debug_tx once. Safe to call multiple times (idempotent). */
+/** Open g_uart_debug_tx once. Safe to call multiple times (idempotent). */
 void rzv_debug_console_init(void);
 
 /** Blocking polled write of @p len bytes; '\n' is expanded to "\r\n".

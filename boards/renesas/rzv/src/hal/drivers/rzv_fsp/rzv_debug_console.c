@@ -6,11 +6,11 @@
 
 /**
  * @file rzv_debug_console.c
- * @brief Polled debug-console TX over SCI_B UART1 (g_uart1_debug_tx / P52 / 115200 8N1).
+ * @brief Polled debug-console TX over SCI_B UART0 (g_uart_debug_tx / P50 / 115200 8N1).
  *
  * See rzv_debug_console.h for rationale. This object also provides:
  *   - rzv_uart_debug_callback(): the (empty) callback referenced by the
- *     generated g_uart1_debug_tx_cfg in rzv_gen/hal_data.c. hal_data.o's
+ *     generated g_uart_debug_tx_cfg in rzv_gen/hal_data.c. hal_data.o's
  *     reference to this symbol forces this translation unit to be linked,
  *     which in turn defines rzv_console_aux_write() (below) so the weak hook
  *     in src/rzv2h-platform/cr8/runtime/syscalls.c resolves to a strong def.
@@ -18,7 +18,7 @@
  *     auxiliary console sink, called for fd 1/2 inside _write().
  */
 
-#include "hal_data.h"        /* g_uart1_debug_tx*, R_SCI_B_UART_Open, R_SCI_B0_Type */
+#include "hal_data.h"        /* g_uart_debug_tx*, R_SCI_B_UART_Open, R_SCI_B0_Type */
 #include "rzv_debug_console.h"
 
 #include <stdbool.h>
@@ -31,7 +31,7 @@
 
 static volatile bool s_console_inited = false;
 
-/* Referenced by g_uart1_debug_tx_cfg.p_callback in rzv_gen/hal_data.c.
+/* Referenced by g_uart_debug_tx_cfg.p_callback in rzv_gen/hal_data.c.
  * The debug console is polled-only, so nothing to do here. */
 void rzv_uart_debug_callback(uart_callback_args_t *p_args)
 {
@@ -47,10 +47,10 @@ void rzv_debug_console_init(void)
     /* Force a clean SCI channel before open so a WARM CR8 restart re-inits the
      * debug UART cleanly (the fresh FSP ctrl makes Close no-op). Per-channel
      * MODULE_STOP; Open below re-STARTs it; harmless on cold boot. */
-    R_BSP_MODULE_STOP(FSP_IP_SCI, g_uart1_debug_tx_cfg.channel);
+    R_BSP_MODULE_STOP(FSP_IP_SCI, g_uart_debug_tx_cfg.channel);
     R_BSP_SoftwareDelay(500, BSP_DELAY_UNITS_MICROSECONDS);
 
-    fsp_err_t err = R_SCI_B_UART_Open(&g_uart1_debug_tx_ctrl, &g_uart1_debug_tx_cfg);
+    fsp_err_t err = R_SCI_B_UART_Open(&g_uart_debug_tx_ctrl, &g_uart_debug_tx_cfg);
     if ((FSP_SUCCESS == err) || (FSP_ERR_ALREADY_OPEN == err)) {
         /* R_SCI_B_UART_Open() enables the transmitter (CCR0.TE) but leaves the
          * TXI interrupt disabled (TIE). Polled TX is therefore safe. */
@@ -75,7 +75,7 @@ void rzv_debug_console_write(const char *buf, size_t len)
         return;
     }
 
-    R_SCI_B0_Type *reg = g_uart1_debug_tx_ctrl.p_reg;
+    R_SCI_B0_Type *reg = g_uart_debug_tx_ctrl.p_reg;
     if (reg == NULL) {
         return;
     }
