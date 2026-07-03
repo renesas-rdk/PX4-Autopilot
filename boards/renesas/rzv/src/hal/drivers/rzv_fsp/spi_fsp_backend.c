@@ -25,15 +25,22 @@
 
 #include "bsp_api.h"
 #include "r_spi_b.h"
-#include "rzv_fsp/dma_buffer.h"
 #include "posix_compat/spi/spidev.h"
 
-#define RZV_SPI_BOUNCE_LEN 1024U
-/* DMA heuristics: prefer DMA once transfers are cache-line safe, word aligned,
- * and large enough that the setup overhead is amortized. Smaller or misaligned
- * operations stay on the bounce buffers so the CPU handles the copies. */
-#define RZV_SPI_DMA_MIN_BYTES 64U
-#define RZV_SPI_DMA_WORD_ALIGN 4U
+/* PX4 drives the IMU SPI channel in pure interrupt/FIFO mode: the DMAC
+ * transfer instances that hal_data.c may attach to g_spi_imu_cfg are stripped
+ * in rzv_spi_backend_init().  Rationale for this choice:
+ *  - the SPI0_RXI->DMAC->DMAINT->CE completion linkage occasionally drops
+ *    under AXI/DDR contention -> "SPI transfer error (20) ... event=0";
+ *  - per-transfer DMAC reconfiguration costs more CPU than the FIFO-drain
+ *    ISRs at these transfer sizes (wq:SPI0 10.83% DMA vs 9.40% interrupt);
+ *  - interrupt mode needs no bounce buffers or cache maintenance: the CPU
+ *    reads/writes the caller's buffers directly, and SCKASE (master SCK
+ *    auto-stop) guarantees no RX overrun.
+ * The DMAC capability itself stays at the platform/e2studio level for other
+ * products; PX4 simply does not use it. */
+/* Upper bound on a single transfer, matching the historical cdev guard. */
+#define RZV_SPI_MAX_TRANSFER_LEN 1024U
 #define RZV_SPI_TRANSFER_TIMEOUT_US 20000U
 /* Number of retries after a transfer error (timeout or abort).
  * After each failure the SPI peripheral is reset via rzv_spi_reopen() to
@@ -43,31 +50,12 @@
 #define RZV_SPI_TRANSFER_MAX_RETRIES 2
 #define RZV_SPI_EVENT_RESET ((spi_event_t)0)
 
-#if defined(__GNUC__)
-#define RZV_SPI_DMA_ALIGN __attribute__((aligned(32)))
-#define RZV_SPI_DMA_NONCACHE __attribute__((section(".noncache_buffer")))
-#else
-#define RZV_SPI_DMA_ALIGN
-#define RZV_SPI_DMA_NONCACHE
-#endif
-
 static StaticSemaphore_t g_spi_mutex_buffer;
 static SemaphoreHandle_t g_spi_mutex;
 static StaticSemaphore_t g_spi_event_sem_buffer;
 static SemaphoreHandle_t g_spi_event_sem;
 
 static volatile spi_event_t g_spi_event = RZV_SPI_EVENT_RESET;
-
-static uint8_t g_spi_tx_bounce[RZV_SPI_BOUNCE_LEN] RZV_SPI_DMA_ALIGN RZV_SPI_DMA_NONCACHE;
-static uint8_t g_spi_rx_bounce[RZV_SPI_BOUNCE_LEN] RZV_SPI_DMA_ALIGN RZV_SPI_DMA_NONCACHE;
-
-#if defined(TRANSFER_EVENT_COMPLETE)
-#define RZV_SPI_DMA_DONE_EVENT TRANSFER_EVENT_COMPLETE
-#elif defined(TRANSFER_EVENT_TRANSFER_END)
-#define RZV_SPI_DMA_DONE_EVENT TRANSFER_EVENT_TRANSFER_END
-#else
-#define RZV_SPI_DMA_DONE_EVENT 0U
-#endif
 
 static void rzv_spi_reset_event_state(void)
 {
@@ -246,6 +234,13 @@ int rzv_spi_backend_init(rzv_spi_backend_t *handle, uint8_t bus)
 	rzv_spi_copy_extend(handle);
 	handle->config.p_extend = &handle->extend;
 	handle->config.p_callback = rzv_spi_imu_callback;
+
+	/* Interrupt/FIFO mode: R_SPI_B_Open() skips the DMAC transfer instances
+	 * entirely when both pointers are NULL (see the rationale at the top of
+	 * this file).  The platform-level DMAC config stays untouched. */
+	handle->config.p_transfer_tx = NULL;
+	handle->config.p_transfer_rx = NULL;
+
 	handle->current_speed_hz = 1000000U;
 
 	/* Per-device SSL routing assumes every SSL line is active-low: R_SPI_B_Open
@@ -382,16 +377,6 @@ static spi_bit_width_t rzv_spi_get_bit_width(const rzv_spi_backend_t *handle)
 	return (handle->bits_per_word == 16U) ? SPI_BIT_WIDTH_16_BITS : SPI_BIT_WIDTH_8_BITS;
 }
 
-static void rzv_spi_copy_from_bounce(void *dest, const void *src, size_t byte_count)
-{
-	if ((dest == NULL) || (src == NULL) || (byte_count == 0U)) {
-		return;
-	}
-
-	memcpy(dest, src, byte_count);
-	R_BSP_CacheCleanRangeData(dest, (uint32_t)byte_count);
-}
-
 int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const rzv_spi_xfer_cfg_t *cfg,
 			     const void *tx, void *rx, size_t length_bytes)
 {
@@ -399,11 +384,9 @@ int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const rzv_spi_xfer_cfg_t
 		return -1;
 	}
 
-	/* Unconditional cap: even DMA-safe caller buffers are rejected above the
-	 * bounce size, preserving the historical cdev-level guard semantics. */
-	if (length_bytes > RZV_SPI_BOUNCE_LEN) {
+	if (length_bytes > RZV_SPI_MAX_TRANSFER_LEN) {
 		PX4_ERR("SPI transfer len %u exceeds max %u", (unsigned)length_bytes,
-			(unsigned)RZV_SPI_BOUNCE_LEN);
+			(unsigned)RZV_SPI_MAX_TRANSFER_LEN);
 		return -1;
 	}
 
@@ -444,63 +427,13 @@ int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const rzv_spi_xfer_cfg_t
 		return -1;
 	}
 
-	const bool same_buffer = (tx != NULL) && (rx != NULL) && (tx == rx);
-	const bool tx_dma_safe = (tx != NULL) ? rzv_dma_buffer_is_dma_safe(tx, byte_count) : false;
-	const bool rx_dma_safe = (rx != NULL) ? rzv_dma_buffer_is_dma_safe(rx, byte_count) : false;
-	const bool dma_len_aligned = ((byte_count & (RZV_SPI_DMA_WORD_ALIGN - 1U)) == 0U);
-	const bool dma_size_ok = byte_count >= RZV_SPI_DMA_MIN_BYTES;
-
-	bool use_tx_bounce = (tx == NULL) || !tx_dma_safe;
-	bool use_rx_bounce = (rx == NULL) || !rx_dma_safe;
-
-	if ((tx != NULL) && (((uintptr_t)tx & (RZV_SPI_DMA_WORD_ALIGN - 1U)) != 0U)) {
-		use_tx_bounce = true;
-	}
-
-	if ((rx != NULL) && (((uintptr_t)rx & (RZV_SPI_DMA_WORD_ALIGN - 1U)) != 0U)) {
-		use_rx_bounce = true;
-	}
-
-	if (!dma_size_ok || !dma_len_aligned) {
-		if (tx != NULL) {
-			use_tx_bounce = true;
-		}
-
-		if (rx != NULL) {
-			use_rx_bounce = true;
-		}
-	}
-
-	/* When the caller uses the same buffer for TX and RX we must go through the
-	 * dedicated bounce buffers. The SPI peripheral performs TX and RX via
-	 * independent DMA channels, and overlapping addresses would race and
-	 * corrupt the command phase before it is clocked out. */
-	if (same_buffer) {
-		use_tx_bounce = true;
-		use_rx_bounce = true;
-	}
-
-	/* byte_count <= RZV_SPI_BOUNCE_LEN is guaranteed by the unconditional
-	 * cap at function entry, so the bounce buffers always fit. */
-
-	const void *tx_ptr = tx;
-	void *rx_ptr = rx;
-
-	if (use_tx_bounce) {
-		if (tx != NULL) {
-			memcpy(g_spi_tx_bounce, tx, byte_count);
-
-		} else {
-			memset(g_spi_tx_bounce, 0, byte_count);
-		}
-
-		tx_ptr = g_spi_tx_bounce;
-	}
-
-	if (use_rx_bounce) {
-		rx_ptr = g_spi_rx_bounce;
-	}
-
+	/* Interrupt/FIFO mode moves every byte with the CPU (r_spi_b_transmit /
+	 * r_spi_b_receive), so the caller's buffers are used directly: no DMA
+	 * coherency concerns, no bounce copies, no cache maintenance.  A shared
+	 * tx==rx buffer is safe too — byte i is always consumed from the TX
+	 * buffer before the received byte i is stored (TX leads RX through the
+	 * shift register), unlike the racing dual-DMA-channel case.  NULL tx
+	 * (send zeros) and NULL rx (discard) are handled natively by r_spi_b. */
 	const spi_bit_width_t bit_width = rzv_spi_get_bit_width(handle);
 	const size_t word_count = (bit_width == SPI_BIT_WIDTH_16_BITS) ? (byte_count / 2U) : byte_count;
 	fsp_err_t err = FSP_ERR_TIMEOUT;
@@ -519,34 +452,16 @@ int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const rzv_spi_xfer_cfg_t
 				  (unsigned)byte_count);
 		}
 
-		if (tx_ptr != NULL) {
-			R_BSP_CacheCleanRangeData((void *)tx_ptr, (uint32_t)byte_count);
-		}
-
-		if (rx_ptr != NULL) {
-			/* Ensure no dirty cache lines in destination before DMA starts. */
-			R_BSP_CacheInvalidateRangeData(rx_ptr, (uint32_t)byte_count);
-		}
-
 		rzv_spi_reset_event_state();
 		event = RZV_SPI_EVENT_RESET;
 
-		err = R_SPI_B_WriteRead(handle->ctrl, tx_ptr, rx_ptr, word_count, bit_width);
+		err = R_SPI_B_WriteRead(handle->ctrl, tx, rx, word_count, bit_width);
 
 		if (err == FSP_SUCCESS) {
 			err = rzv_spi_wait_for_event(RZV_SPI_TRANSFER_TIMEOUT_US, &event);
 		}
 
 		if (err == FSP_SUCCESS) {
-			/* Invalidate cache AFTER DMA completes so CPU observes freshly written data. */
-			if (rx_ptr != NULL) {
-				R_BSP_CacheInvalidateRangeData(rx_ptr, (uint32_t)byte_count);
-			}
-
-			if ((rx != NULL) && (rx_ptr == g_spi_rx_bounce)) {
-				rzv_spi_copy_from_bounce(rx, g_spi_rx_bounce, byte_count);
-			}
-
 			xSemaphoreGive(g_spi_mutex);
 			return 0;
 		}
@@ -556,7 +471,7 @@ int rzv_spi_backend_transfer(rzv_spi_backend_t *handle, const rzv_spi_xfer_cfg_t
 			attempt + 1, RZV_SPI_TRANSFER_MAX_RETRIES + 1);
 	}
 
-	PX4_ERR("  tx=%p rx=%p tx_bounce=%p rx_bounce=%p", tx_ptr, rx_ptr, g_spi_tx_bounce, g_spi_rx_bounce);
+	PX4_ERR("  tx=%p rx=%p", tx, rx);
 
 	/* Never hand a possibly-stuck peripheral to the next caller: reset it now,
 	 * or mark it so the next transfer reopens before touching registers. */

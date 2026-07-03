@@ -20,7 +20,18 @@
 #include <px4_platform_common/tasks.h>
 
 #include "hal_data.h"
+/* hal_data.h emits BSP_TRIGGER_INTC_TINT0_* only when e2studio has r_intc_tint
+ * external-IRQ (DRDY) channels configured — the FSP tree then also ships
+ * r_external_irq_api.h.  The drone FSP config has the DRDY TINT channels and
+ * the header removed, so the hardware-IRQ path below compiles out and every
+ * DRDY registration falls back to the GPIO poll task.  Platform products that
+ * keep the channels get the full hardware path from the same source. */
+#if defined(BSP_TRIGGER_INTC_TINT0_INTC_TINT_TRIGGER_FALLING)
+#define RZV_DRDY_HW_IRQ 1
 #include "r_external_irq_api.h"
+#else
+#define RZV_DRDY_HW_IRQ 0
+#endif
 #include "r_ioport.h"
 #include "sensor_hal.h"
 #include <rzv_fsp/hrt.h>
@@ -78,6 +89,7 @@ namespace
  * Pins not listed here fall back to the GPIO polling task (still functional, just
  * higher CPU and coarser timing).
  */
+#if RZV_DRDY_HW_IRQ
 struct DrdyIrqChannel {
 	uint32_t                       portpin;   // bsp_io_port_pin_t value (lower 16 bits)
 	const external_irq_instance_t *instance;
@@ -105,6 +117,7 @@ static const DrdyIrqChannel *find_irq_channel_by_pin(uint32_t pinset)
 
 	return nullptr;
 }
+#endif /* RZV_DRDY_HW_IRQ */
 
 struct DrdyClient {
 	bool        in_use{false};
@@ -132,9 +145,11 @@ struct DrdyClient {
 
 static constexpr size_t MAX_DRDY_CLIENTS = 6;
 static DrdyClient g_drdy_clients[MAX_DRDY_CLIENTS];
+#if RZV_DRDY_HW_IRQ
 // One client + open-flag per hardware IRQ channel (indexed by DrdyIrqChannel.channel).
 static std::atomic<DrdyClient *> g_irq_client_by_channel[DRDY_IRQ_CHANNEL_COUNT] {};
 static bool g_irq_open_by_channel[DRDY_IRQ_CHANNEL_COUNT] {};
+#endif
 
 static void drdy_deferred_task(void *param)
 {
@@ -165,13 +180,22 @@ static inline bsp_io_port_pin_t resolve_pin(uint32_t pinset)
 
 static inline bsp_io_port_pin_t irq_supported_pin()
 {
+#if RZV_DRDY_HW_IRQ
 	// First mapped channel — used only for the diagnostic WARN below.
 	return static_cast<bsp_io_port_pin_t>(g_drdy_irq_channels[0].portpin);
+#else
+	return static_cast<bsp_io_port_pin_t>(0);
+#endif
 }
 
 static bool pin_supports_hw_irq(uint32_t pinset)
 {
+#if RZV_DRDY_HW_IRQ
 	return find_irq_channel_by_pin(pinset) != nullptr;
+#else
+	(void)pinset;
+	return false;
+#endif
 }
 
 static inline void signal_poll_stop(DrdyClient *client)
@@ -336,6 +360,9 @@ static int enable_hardware_irq(DrdyClient *client)
 		return -EINVAL;
 	}
 
+#if !RZV_DRDY_HW_IRQ
+	return -ENOTSUP;
+#else
 	const DrdyIrqChannel *ch = find_irq_channel_by_pin(client->pinset);
 
 	if (!ch) {
@@ -377,6 +404,7 @@ static int enable_hardware_irq(DrdyClient *client)
 	PX4_DEBUG("DRDY hardware IRQ ch%lu enabled for pinset=0x%08lx",
 		  (unsigned long)ch->channel, (unsigned long)client->pinset);
 	return 0;
+#endif /* RZV_DRDY_HW_IRQ */
 }
 
 static void disable_hardware_irq(DrdyClient *client)
@@ -385,6 +413,7 @@ static void disable_hardware_irq(DrdyClient *client)
 		return;
 	}
 
+#if RZV_DRDY_HW_IRQ
 	const DrdyIrqChannel *ch = find_irq_channel_by_pin(client->pinset);
 
 	if (!ch) {
@@ -398,10 +427,12 @@ static void disable_hardware_irq(DrdyClient *client)
 		(void)ch->instance->p_api->close(ch->instance->p_ctrl);
 		g_irq_open_by_channel[ch->channel] = false;
 	}
+#endif /* RZV_DRDY_HW_IRQ */
 }
 
 } // namespace
 
+#if RZV_DRDY_HW_IRQ
 /*
  * mpu_drdy_callback(): Callback for the sensor data ready interrupt
  */
@@ -424,6 +455,7 @@ extern "C" void mpu_drdy_callback(external_irq_callback_args_t *p_args)
 
 	portYIELD_FROM_ISR(higher_priority_woken);
 }
+#endif /* RZV_DRDY_HW_IRQ */
 
 // Pop one ISR timestamp from the ring buffer (FIFO order).
 // Each DataReady() callback should call this once so the batch-completing call
