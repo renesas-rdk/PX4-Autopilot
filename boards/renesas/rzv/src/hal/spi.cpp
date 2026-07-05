@@ -51,24 +51,33 @@
 constexpr px4_spi_bus_t px4_spi_buses[SPI_BUS_MAX_BUS_ITEMS] = {
 	{
 		.devices = {
+			// drdy_gpio = 0 for all three: the DRDY/INT1 approach is fully retired on
+			// this board — all IMUs run POLLED (-P in config.txt). The former DRDY pads
+			// have been repurposed (P50 -> SCI0 debug-console TXD0; PA0 -> SDHI0 VccQ on
+			// the CA55/DTB side; P74 freed) and the FSP no longer configures any TINT
+			// channel. Leaving the old pins here was a latent foot-gun: if -P were ever
+			// dropped, the driver would try to drive/read a pin that is now a UART output
+			// (P50) or owned by CA55 (PA0). Keep these 0 so the driver stays polled-only
+			// regardless of the -P flag. The sensor's own INT1 output is also disabled in
+			// the icm45686 driver register table (see ICM45686.hpp, __PX4_FREERTOS block).
 			{
 				// ICM-45688 IMU #1 (SSL0)
 				.cs_gpio = 1,        // logical CS index -> SSL0
-				.drdy_gpio = BSP_IO_PORT_05_PIN_00,  // DRDY SSL0 = P50 (FIFO-watermark INT1, routed via micro_hal ch0)
+				.drdy_gpio = 0,      // polled (-P); P50 pad is now the SCI0 debug-console TXD0
 				.devid = PX4_SPIDEV_ID(PX4_SPI_DEVICE_ID, 1),
 				.devtype_driver = DRV_IMU_DEVTYPE_ICM45686,
 			},
 			{
 				// ICM-45688 IMU #2 (SSL1)
 				.cs_gpio = 2,        // logical CS index -> SSL1
-				.drdy_gpio = BSP_IO_PORT_10_PIN_00,  // DRDY SSL1 = PA0 (FIFO-watermark INT1, routed via micro_hal ch1)
+				.drdy_gpio = 0,      // polled (-P); PA0 pad is now SDHI0 VccQ (CA55/DTB side)
 				.devid = PX4_SPIDEV_ID(PX4_SPI_DEVICE_ID, 2),
 				.devtype_driver = DRV_IMU_DEVTYPE_ICM45686,
 			},
 			{
 				// ICM-45688 IMU #3 (SSL2)
 				.cs_gpio = 3,        // logical CS index -> SSL2
-				.drdy_gpio = BSP_IO_PORT_07_PIN_04,  // DRDY SSL2 = P74 (FIFO-watermark INT1, routed via micro_hal ch2)
+				.drdy_gpio = 0,      // polled (-P); P74 pad freed (no TINT channel in FSP)
 				.devid = PX4_SPIDEV_ID(PX4_SPI_DEVICE_ID, 3),
 				.devtype_driver = DRV_IMU_DEVTYPE_ICM45686,
 			},

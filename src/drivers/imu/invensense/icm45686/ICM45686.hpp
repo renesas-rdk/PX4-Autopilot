@@ -182,8 +182,27 @@ private:
 	uint16_t _fifo_watermark{0}; // FIFO_THS watermark in records, force-written in Configure()
 
 	uint8_t _checked_register_bank0{0};
+	uint8_t _register_check_fail_count{0};  // consecutive RegisterCheck fails → re-write in place; Reset() only after many (RZ/V2H boot P50/INT1 read-artifact, see RunImpl)
 	static constexpr uint8_t size_register_bank0_cfg{13};
 	register_bank0_config_t _register_bank0_cfg[size_register_bank0_cfg] {
+#if defined(__PX4_FREERTOS)
+		// RZ/V2H runs all three IMUs POLLED (-P): the sensor INT1 pin is never used
+		// (DataReadyInterruptConfigure() returns false when _drdy_gpio == 0, so the
+		// polled FIFO path never reads INT1_STATUS). Leave INT1 disabled and high-Z.
+		//
+		// This is critical, not just tidy: IMU#1's INT1 net is the same physical pad
+		// as the SCI0 debug-console TXD0 (P50, freed from DRDY once all IMUs went
+		// polled). If the sensor drives INT1 push-pull it fights the UART output on
+		// that net -- the contention corrupts SPI reads (the FIFO_CONFIG0 verify reads
+		// back 0x3E = 0x9F<<1 instead of 0x9F), RegisterCheck fails, and RunImpl's
+		// check-fail branch calls Reset() every cycle -> endless reconfigure storm with
+		// ~50-100 ms gyro/accel blackouts (IMU produces no usable data; sometimes the
+		// initial Configure() fails outright and the driver never enters the work queue).
+		// Route no source to INT1 (INT1_CONFIG0 = 0) and set open-drain (INT1_DRIVE = 1)
+		// so the pin stays high-Z and P50 belongs solely to the UART.
+		{ Register::BANK_0::INT1_CONFIG0, 0, 0xFF },
+		{ Register::BANK_0::INT1_CONFIG2, INT1_CONFIG2_BIT::INT1_DRIVE, INT1_CONFIG2_BIT::INT1_MODE | INT1_CONFIG2_BIT::INT1_POLARITY },
+#else
 		// route only the FIFO threshold (watermark) interrupt to INT1
 		{ Register::BANK_0::INT1_CONFIG0, INT1_CONFIG0_BIT::INT1_STATUS_EN_FIFO_THS, (uint8_t)~INT1_CONFIG0_BIT::INT1_STATUS_EN_FIFO_THS },
 		// INT1: push-pull, LATCHED, active low. RZV TINT edge-detector misses the
@@ -191,6 +210,7 @@ private:
 		// asserted until cleared; the driver reads INT1_STATUS0 after each FIFO read to
 		// re-arm. (Set INT1_MODE = latched; clear INT1_DRIVE = push-pull, INT1_POLARITY = active low.)
 		{ Register::BANK_0::INT1_CONFIG2, INT1_CONFIG2_BIT::INT1_MODE, INT1_CONFIG2_BIT::INT1_DRIVE | INT1_CONFIG2_BIT::INT1_POLARITY },
+#endif
 		{ Register::BANK_0::PWR_MGMT0, PWR_MGMT0_BIT::GYRO_MODE_LOW_NOISE | PWR_MGMT0_BIT::ACCEL_MODE_LOW_NOISE, 0 },
 
 #if defined(__PX4_FREERTOS)

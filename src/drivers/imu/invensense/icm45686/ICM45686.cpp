@@ -299,11 +299,33 @@ void ICM45686::RunImpl()
 				if (skip_check || RegisterCheck(checked)) {
 					_last_config_check_timestamp = now;
 					_checked_register_bank0 = (_checked_register_bank0 + 1) % size_register_bank0_cfg;
+					_register_check_fail_count = 0;
 
 				} else {
-					// register check failed, force reset
 					perf_count(_bad_register_perf);
+#if defined(__PX4_FREERTOS)
+					// RZ/V2H: a failed readback here is almost always a transient corrupted READ,
+					// not real register drift. IMU#1's INT1 pin shares physical net P50 with the
+					// debug-console UART TXD; at boot the sensor's push-pull INT1 (POR default)
+					// contends with the UART until Configure() sets INT1 open-drain, and the reads
+					// come back bit-shifted (FIFO_CONFIG0 = 0x9F<<1). A full Reset() re-runs SOFT_RST
+					// -> INT1 returns to its push-pull POR default -> RE-OPENS the contention every
+					// cycle: a self-sustaining reconfigure storm (+ EKF gyro/filter faults) that only
+					// clears when the boot-log UART traffic on P50 subsides. Re-write the register in
+					// place instead of resetting; the open-drain INT1 config then STAYS applied (never
+					// re-defaulted) so the contention ends immediately. Escalate to a real Reset() only
+					// if the SAME check keeps failing (genuine drift, not the boot read-artifact).
+					RegisterSetAndClearBits(checked.reg, checked.set_bits, checked.clear_bits);
+					_last_config_check_timestamp = now;
+
+					if (++_register_check_fail_count >= 20) {
+						_register_check_fail_count = 0;
+						Reset();
+					}
+#else
+					// register check failed, force reset
 					Reset();
+#endif
 				}
 			}
 		}
