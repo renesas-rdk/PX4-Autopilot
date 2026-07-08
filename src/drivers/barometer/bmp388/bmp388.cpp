@@ -210,26 +210,43 @@ BMP388::soft_reset()
 	uint8_t status;
 	int     ret;
 
-	ret = _interface->get_reg(BMP3_SENS_STATUS_REG_ADDR, &status);
+	// Poll CMD_RDY instead of sampling it once. On a cold power-on (or right
+	// after a previous command/conversion) the sensor can take a few ms before
+	// CMD_RDY asserts in the status register. The old one-shot read gave up and
+	// returned false the instant CMD_RDY was clear, so init() failed with
+	// "no device on bus?" — despite the chip being visible on i2cdetect — and
+	// the operator had to retry the start command several times until the poll
+	// happened to land on a ready cycle. (Bus 7 is shared with other sensors,
+	// which widens the window.) Bosch's reference driver polls; match it.
+	bool cmd_ready = false;
 
-	if (ret != OK) {
+	for (int i = 0; i < 10; i++) {
+		ret = _interface->get_reg(BMP3_SENS_STATUS_REG_ADDR, &status);
+
+		if (ret == OK && (status & BMP3_CMD_RDY)) {
+			cmd_ready = true;
+			break;
+		}
+
+		usleep(BMP3_POST_RESET_WAIT_TIME);
+	}
+
+	if (!cmd_ready) {
 		return false;
 	}
 
-	if (status & BMP3_CMD_RDY) {
-		ret = _interface->set_reg(BPM3_CMD_SOFT_RESET, BMP3_CMD_ADDR);
+	ret = _interface->set_reg(BPM3_CMD_SOFT_RESET, BMP3_CMD_ADDR);
 
-		if (ret == OK) {
-			usleep(BMP3_POST_RESET_WAIT_TIME);
-			ret = _interface->get_reg(BMP3_ERR_REG_ADDR, &status);
+	if (ret == OK) {
+		usleep(BMP3_POST_RESET_WAIT_TIME);
+		ret = _interface->get_reg(BMP3_ERR_REG_ADDR, &status);
 
-			if (ret != OK) {
-				return false;
-			}
+		if (ret != OK) {
+			return false;
+		}
 
-			if ((status & BMP3_CMD_ERR) == 0) {
-				result = true;
-			}
+		if ((status & BMP3_CMD_ERR) == 0) {
+			result = true;
 		}
 	}
 
