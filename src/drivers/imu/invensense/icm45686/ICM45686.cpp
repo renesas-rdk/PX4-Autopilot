@@ -497,14 +497,32 @@ bool ICM45686::RegisterCheck(const T &reg_cfg)
 
 	const uint8_t reg_value = RegisterRead(reg_cfg.reg);
 
-	if (reg_cfg.set_bits && ((reg_value & reg_cfg.set_bits) != reg_cfg.set_bits)) {
-		PX4_INFO("0x%02hhX: 0x%02hhX (0x%02hhX not set)", (uint8_t)reg_cfg.reg, reg_value, reg_cfg.set_bits);
-		success = false;
-	}
+	const bool set_mismatch   = reg_cfg.set_bits   && ((reg_value & reg_cfg.set_bits) != reg_cfg.set_bits);
+	const bool clear_mismatch = reg_cfg.clear_bits && ((reg_value & reg_cfg.clear_bits) != 0);
 
-	if (reg_cfg.clear_bits && ((reg_value & reg_cfg.clear_bits) != 0)) {
-		PX4_INFO("0x%02hhX: 0x%02hhX (0x%02hhX not cleared)", (uint8_t)reg_cfg.reg, reg_value, reg_cfg.clear_bits);
+	if (set_mismatch || clear_mismatch) {
 		success = false;
+
+		// Rate-limit the diagnostic to 1/s per instance. A transient corrupted
+		// SPI read (3 IMUs sharing one bus under OpenAMP; historically also the
+		// P50/INT1-vs-console contention) fails these checks in bursts, and each
+		// PX4_INFO is a polled-UART console write inside the sensor work queue —
+		// unthrottled it burns CR8 CPU exactly during the burst. RunImpl re-writes
+		// the register in place and escalates to Reset() on its own fail counter,
+		// so the per-check line is purely diagnostic; one line/s keeps the signal.
+		const hrt_abstime now = hrt_absolute_time();
+
+		if (now - _last_regcheck_log_timestamp >= 1_s) {
+			_last_regcheck_log_timestamp = now;
+
+			if (set_mismatch) {
+				PX4_INFO("0x%02hhX: 0x%02hhX (0x%02hhX not set)", (uint8_t)reg_cfg.reg, reg_value, reg_cfg.set_bits);
+			}
+
+			if (clear_mismatch) {
+				PX4_INFO("0x%02hhX: 0x%02hhX (0x%02hhX not cleared)", (uint8_t)reg_cfg.reg, reg_value, reg_cfg.clear_bits);
+			}
+		}
 	}
 
 	return success;

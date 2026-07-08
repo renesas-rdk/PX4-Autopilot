@@ -153,6 +153,7 @@ private:
 
 	hrt_abstime _reset_timestamp{0};
 	hrt_abstime _last_config_check_timestamp{0};
+	hrt_abstime _last_regcheck_log_timestamp{0};  // rate-limit RegisterCheck mismatch prints (see RegisterCheck)
 	hrt_abstime _temperature_update_timestamp{0};
 	int _failure_count{0};
 
