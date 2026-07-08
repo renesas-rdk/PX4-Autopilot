@@ -58,12 +58,12 @@ target_include_directories(drivers_rzv_fsp
         ${CMAKE_SOURCE_DIR}/rzv/aws/FreeRTOS/FreeRTOS/Source/include
         ${CMAKE_SOURCE_DIR}/rzv/aws/FreeRTOS/FreeRTOS-Plus/Source/FreeRTOS-Plus-Common/include
         # Platform FreeRTOS+POSIX shim (freertos-port).
-        ${CMAKE_SOURCE_DIR}/src/rzv2h-platform/cr8/freertos-port/include
-        ${CMAKE_SOURCE_DIR}/src/rzv2h-platform/cr8/freertos-port/include/portable
-        ${CMAKE_SOURCE_DIR}/src/rzv2h-platform/cr8/freertos-port/include/FreeRTOS_POSIX
-        ${CMAKE_SOURCE_DIR}/src/rzv2h-platform/cr8/freertos-port/include/private
-        ${CMAKE_SOURCE_DIR}/src/rzv2h-platform/cr8/freertos-port/portable/include
-        ${CMAKE_SOURCE_DIR}/src/rzv2h-platform/cr8/freertos-port/portable
+        ${CMAKE_SOURCE_DIR}/src/renesas-robotics-platform/cr8/freertos-port/include
+        ${CMAKE_SOURCE_DIR}/src/renesas-robotics-platform/cr8/freertos-port/include/portable
+        ${CMAKE_SOURCE_DIR}/src/renesas-robotics-platform/cr8/freertos-port/include/FreeRTOS_POSIX
+        ${CMAKE_SOURCE_DIR}/src/renesas-robotics-platform/cr8/freertos-port/include/private
+        ${CMAKE_SOURCE_DIR}/src/renesas-robotics-platform/cr8/freertos-port/portable/include
+        ${CMAKE_SOURCE_DIR}/src/renesas-robotics-platform/cr8/freertos-port/portable
         ${CMAKE_SOURCE_DIR}/rzv/linaro/open-amp/lib/include
         ${CMAKE_SOURCE_DIR}/rzv/linaro/libmetal/include
 )

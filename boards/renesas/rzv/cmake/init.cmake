@@ -35,12 +35,12 @@ set(RZV_INCLUDE_DIRS
     ${RZV_WORKSPACE_ROOT}/rzv/aws/FreeRTOS/FreeRTOS/Source/include
     ${RZV_WORKSPACE_ROOT}/rzv/aws/FreeRTOS/FreeRTOS-Plus/Source/FreeRTOS-Plus-Common/include
     # B1: platform FreeRTOS+POSIX shim (freertos-port); subpaths identical to the old in-repo copy.
-    ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port/include
-    ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port/include/portable
-    ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port/include/FreeRTOS_POSIX
-    ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port/include/private
-    ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port/portable
-    ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port/portable/include
+    ${RZV_WORKSPACE_ROOT}/src/renesas-robotics-platform/cr8/freertos-port/include
+    ${RZV_WORKSPACE_ROOT}/src/renesas-robotics-platform/cr8/freertos-port/include/portable
+    ${RZV_WORKSPACE_ROOT}/src/renesas-robotics-platform/cr8/freertos-port/include/FreeRTOS_POSIX
+    ${RZV_WORKSPACE_ROOT}/src/renesas-robotics-platform/cr8/freertos-port/include/private
+    ${RZV_WORKSPACE_ROOT}/src/renesas-robotics-platform/cr8/freertos-port/portable
+    ${RZV_WORKSPACE_ROOT}/src/renesas-robotics-platform/cr8/freertos-port/portable/include
     ${PX4_SOURCE_DIR}/boards/renesas/rzv/src
     ${PX4_SOURCE_DIR}/boards/renesas/rzv/src/board
     ${PX4_SOURCE_DIR}/boards/renesas/rzv/src/hal

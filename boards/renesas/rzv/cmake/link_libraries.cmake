@@ -9,7 +9,7 @@
 set(FREERTOS_ROOT ${RZV_WORKSPACE_ROOT}/rzv/aws/FreeRTOS/FreeRTOS/Source)
 # B1: consume the platform FreeRTOS+POSIX shim (freertos-port) instead of the in-repo copy.
 # Sources live under posix-shim/ (was source/); include tree layout is otherwise identical.
-set(FREERTOS_PORT_ROOT ${RZV_WORKSPACE_ROOT}/src/rzv2h-platform/cr8/freertos-port)
+set(FREERTOS_PORT_ROOT ${RZV_WORKSPACE_ROOT}/src/renesas-robotics-platform/cr8/freertos-port)
 
 # Build FreeRTOS kernel library
 add_library(freertos_kernel STATIC

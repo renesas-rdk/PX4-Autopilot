@@ -13,7 +13,7 @@
  *     generated g_uart_debug_tx_cfg in rzv_gen/hal_data.c. hal_data.o's
  *     reference to this symbol forces this translation unit to be linked,
  *     which in turn defines rzv_console_aux_write() (below) so the weak hook
- *     in src/rzv2h-platform/cr8/runtime/syscalls.c resolves to a strong def.
+ *     in src/renesas-robotics-platform/cr8/runtime/syscalls.c resolves to a strong def.
  *   - rzv_console_aux_write(): the strong override of the platform's weak
  *     auxiliary console sink, called for fd 1/2 inside _write().
  */
@@ -121,7 +121,7 @@ void rzv_debug_console_write(const char *buf, size_t len)
 }
 
 /* Strong override of the platform's weak auxiliary console sink (declared
- * weak in src/rzv2h-platform/cr8/runtime/syscalls.c). Called for fd 1/2. */
+ * weak in src/renesas-robotics-platform/cr8/runtime/syscalls.c). Called for fd 1/2. */
 void rzv_console_aux_write(const char *buf, size_t len)
 {
     rzv_debug_console_write(buf, len);
