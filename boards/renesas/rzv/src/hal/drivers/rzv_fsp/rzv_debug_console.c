@@ -6,7 +6,7 @@
 
 /**
  * @file rzv_debug_console.c
- * @brief Polled debug-console TX over SCI_B UART0 (g_uart_debug_tx / P50 / 115200 8N1).
+ * @brief Polled debug-console TX over SCI_B UART1 (g_uart_debug_tx / P52 / 115200 8N1).
  *
  * See rzv_debug_console.h for rationale. This object also provides:
  *   - rzv_uart_debug_callback(): the (empty) callback referenced by the
@@ -60,7 +60,7 @@ void rzv_debug_console_init(void)
          * TXI interrupt disabled (TIE). Polled TX is therefore safe. */
 
         /* TX-only hardening: this console is a log sink — no shell, and the
-         * pin config muxes only TXD0 (P50); no RX pin is assigned. Open()
+         * pin config muxes only TXD1 (P52); no RX pin is assigned. Open()
          * nevertheless enables the receiver and its RXI/ERI vectors (the
          * generated cfg carries rxi_ipl/eri_ipl=14), so a floating/unmuxed
          * RX input could still latch noise into an ISR. Stop the receiver
