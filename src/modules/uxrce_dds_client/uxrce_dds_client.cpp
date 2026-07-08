@@ -892,6 +892,9 @@ void UxrceddsClient::run()
 		// Reset on every (re)connect so DDS re-discovery after reconnect (~5-10s)
 		// doesn't immediately trigger a false "data path stalled" event.
 		hrt_abstime last_data_rx = hrt_absolute_time();
+		// Baseline for the stall gate below: only payload received IN THIS session
+		// counts (num_payload_received accumulates across reconnects).
+		const uint32_t session_rx_baseline = _pubs->num_payload_received;
 #endif /* __PX4_FREERTOS */
 		int poll_error_counter = 0;
 #if defined(__PX4_FREERTOS)
@@ -1031,7 +1034,14 @@ void UxrceddsClient::run()
 			// 15s (not 5s) gives FastDDS re-discovery time after reconnect — the
 			// previous 5s threshold caused a false-stall loop where each reconnect
 			// triggered DDS re-discovery (~5-10s gap) → immediate re-stall.
-			if ((_last_payload_tx_rate > 0) && (hrt_elapsed_time(&last_data_rx) > 15_s)) {
+			// on an idle bench no ROS 2
+			// node publishes /fmu/in/*, so "TX active, RX silent" is the NORMAL
+			// steady state — ungated, this check tore down a healthy session every
+			// 15s forever (sensor topics never survived the re-discovery churn).
+			// A session that never received payload relies on the ping mechanism
+			// below (8 missed pings → disconnect) for liveness instead.
+			if ((_last_payload_tx_rate > 0) && (_pubs->num_payload_received > session_rx_baseline)
+			    && (hrt_elapsed_time(&last_data_rx) > 15_s)) {
 				PX4_WARN("Data path stalled: TX active but no RX for 15s, reconnecting");
 				_connected = false;
 			}

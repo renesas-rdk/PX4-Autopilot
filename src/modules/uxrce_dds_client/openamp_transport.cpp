@@ -234,8 +234,25 @@ size_t px4_custom_transport_write(struct uxrCustomTransport* transport, const ui
     }
 
     if (result < 0) {
-        PX4_ERR("Failed to send message: %d (no_buf=%s)", result,
-                result == RPMSG_ERR_NO_BUFF ? "yes" : "no");
+        /* Rate-limit this error to 1 line/s. It fires once per failed send, and the
+         * debug console is a polled UART (ms-scale busy-wait per line) running in
+         * THIS task's context — unthrottled, a full vring (no_buf) makes the client
+         * burn its own CPU printing, falling further behind the very congestion
+         * that caused the failure. */
+        static int64_t last_send_err_ms = 0;
+        static uint32_t suppressed_send_errors = 0;
+        const int64_t now_ms = uxr_millis();
+
+        if (now_ms - last_send_err_ms >= 1000) {
+            PX4_ERR("Failed to send message: %d (no_buf=%s, %" PRIu32 " suppressed)", result,
+                    result == RPMSG_ERR_NO_BUFF ? "yes" : "no", suppressed_send_errors);
+            suppressed_send_errors = 0;
+            last_send_err_ms = now_ms;
+
+        } else {
+            suppressed_send_errors++;
+        }
+
         *error = 1;
         send_errors++;
         return 0;

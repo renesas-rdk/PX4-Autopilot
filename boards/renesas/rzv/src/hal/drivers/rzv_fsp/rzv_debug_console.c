@@ -29,6 +29,10 @@
  * re-arm it after each byte (mirrors the FSP TXI ISR). */
 #define RZV_SCI_B_CFCLR_TDREC   (0x20000000U)
 
+/* CFCLR write-1-to-clear mask for every RX-side flag: RDRFC (b31), FERC (b28),
+ * PERC (b27), ORERC (b24), ERSC (b4). Used when quiescing the receiver. */
+#define RZV_SCI_B_CFCLR_RX_ALL  (0x99000010U)
+
 static volatile bool s_console_inited = false;
 
 /* Referenced by g_uart_debug_tx_cfg.p_callback in rzv_gen/hal_data.c.
@@ -54,6 +58,27 @@ void rzv_debug_console_init(void)
     if ((FSP_SUCCESS == err) || (FSP_ERR_ALREADY_OPEN == err)) {
         /* R_SCI_B_UART_Open() enables the transmitter (CCR0.TE) but leaves the
          * TXI interrupt disabled (TIE). Polled TX is therefore safe. */
+
+        /* TX-only hardening: this console is a log sink — no shell, and the
+         * pin config muxes only TXD0 (P50); no RX pin is assigned. Open()
+         * nevertheless enables the receiver and its RXI/ERI vectors (the
+         * generated cfg carries rxi_ipl/eri_ipl=14), so a floating/unmuxed
+         * RX input could still latch noise into an ISR. Stop the receiver
+         * and keep the RX-side vectors off (defense-in-depth). */
+        R_SCI_B0_Type *reg = g_uart_debug_tx_ctrl.p_reg;
+        if (reg != NULL) {
+            reg->CCR0_b.RE  = 0;
+            reg->CCR0_b.RIE = 0;
+            reg->CFCLR      = RZV_SCI_B_CFCLR_RX_ALL;
+            reg->FFCLR      = 1U; /* DRC: drop any byte already in the RX FIFO */
+        }
+        if (g_uart_debug_tx_cfg.rxi_irq >= 0) {
+            R_BSP_IrqDisable(g_uart_debug_tx_cfg.rxi_irq);
+        }
+        if (g_uart_debug_tx_cfg.eri_irq >= 0) {
+            R_BSP_IrqDisable(g_uart_debug_tx_cfg.eri_irq);
+        }
+
         s_console_inited = true;
     }
 }
