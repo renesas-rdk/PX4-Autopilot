@@ -33,6 +33,30 @@
 
 #include <stddef.h>
 
+/**
+ * TOGGLE — physical debug-console output on/off.
+ *
+ *   0 = DISABLED (default): rzv_debug_console_init() does not open SCI1 and
+ *       rzv_console_aux_write() is a no-op. No byte is ever busy-waited out the
+ *       UART.  Rationale: the sink is a *polled* UART (~87 us/byte @115200); a
+ *       multi-line log burst blocks whatever task called printf/PX4_INFO —
+ *       including the sensor work queue — for milliseconds, starving the SPI
+ *       completion ISR and producing FSP_ERR_TIMEOUT "SPI transfer error (20)"
+ *       storms + IMU instability (the exact failure syscalls.c _write warns
+ *       about). On the current sub-board P52 is remuxed to GPS_SAFETY_SWITCH
+ *       (bsp_pin_cfg.h) and no debug pin is wired, so the output has nowhere to
+ *       go anyway — pure cost, zero benefit.
+ *
+ *   1 = ENABLED: original behaviour (open SCI1, mirror stdout/stderr out TXD1).
+ *       Re-enable ONLY on a board revision that provides a *dedicated* debug pin
+ *       (not shared with a sensor/GPS net) — set this to 1 and route the pin in
+ *       e2studio (configuration.xml / bsp_pin_cfg.h). SEGGER RTT via J-Link
+ *       remains available for debugging regardless of this toggle.
+ */
+#ifndef RZV_DEBUG_CONSOLE_ENABLE
+#define RZV_DEBUG_CONSOLE_ENABLE 0
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

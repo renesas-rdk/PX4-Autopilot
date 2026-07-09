@@ -44,6 +44,13 @@ void rzv_uart_debug_callback(uart_callback_args_t *p_args)
 
 void rzv_debug_console_init(void)
 {
+#if !RZV_DEBUG_CONSOLE_ENABLE
+    /* Toggle OFF (default): never open SCI1. Leaving the peripheral stopped
+     * avoids any interference with P52 (now GPS_SAFETY_SWITCH) and removes the
+     * polled-UART CPU theft entirely. s_console_inited stays false, so both
+     * rzv_debug_console_write() and rzv_console_aux_write() become no-ops. */
+    return;
+#else
     if (s_console_inited) {
         return;
     }
@@ -81,6 +88,7 @@ void rzv_debug_console_init(void)
 
         s_console_inited = true;
     }
+#endif /* RZV_DEBUG_CONSOLE_ENABLE */
 }
 
 static inline void rzv_debug_console_putc(R_SCI_B0_Type *reg, uint8_t c)
@@ -124,5 +132,13 @@ void rzv_debug_console_write(const char *buf, size_t len)
  * weak in src/renesas-robotics-platform/cr8/runtime/syscalls.c). Called for fd 1/2. */
 void rzv_console_aux_write(const char *buf, size_t len)
 {
+#if RZV_DEBUG_CONSOLE_ENABLE
     rzv_debug_console_write(buf, len);
+#else
+    /* Toggle OFF: physical console disabled — do not busy-wait bytes out a UART
+     * (see RZV_DEBUG_CONSOLE_ENABLE in rzv_debug_console.h). SEGGER RTT + the
+     * uORB mavlink_log topic still carry stdout to J-Link / QGC. */
+    (void)buf;
+    (void)len;
+#endif
 }
