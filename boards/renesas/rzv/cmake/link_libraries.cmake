@@ -9,7 +9,7 @@
 set(FREERTOS_ROOT ${RZV_WORKSPACE_ROOT}/rzv/aws/FreeRTOS/FreeRTOS/Source)
 # B1: consume the platform FreeRTOS+POSIX shim (freertos-port) instead of the in-repo copy.
 # Sources live under posix-shim/ (was source/); include tree layout is otherwise identical.
-set(FREERTOS_PORT_ROOT ${RZV_WORKSPACE_ROOT}/src/renesas-robotics-platform/cr8/freertos-port)
+set(FREERTOS_PORT_ROOT ${RZV_WORKSPACE_ROOT}/src/freertos_posix)
 
 # Build FreeRTOS kernel library
 add_library(freertos_kernel STATIC
@@ -40,9 +40,9 @@ target_compile_options(freertos_kernel PRIVATE
 # from the platform freertos-port/posix-shim; pthread_mutex.c is the SAME file the firmware ELF
 # compiles (both define __PX4_FREERTOS) — no split-brain. unistd.c is not needed here.
 add_library(freertos_posix_minimal STATIC
-    ${FREERTOS_PORT_ROOT}/posix-shim/FreeRTOS_POSIX_pthread_mutex.c
-    ${FREERTOS_PORT_ROOT}/posix-shim/FreeRTOS_POSIX_sched.c
-    ${FREERTOS_PORT_ROOT}/posix-shim/FreeRTOS_POSIX_utils.c
+    ${FREERTOS_PORT_ROOT}/source/FreeRTOS_POSIX_pthread_mutex.c
+    ${FREERTOS_PORT_ROOT}/source/FreeRTOS_POSIX_sched.c
+    ${FREERTOS_PORT_ROOT}/source/FreeRTOS_POSIX_utils.c
 )
 
 target_include_directories(freertos_posix_minimal PUBLIC
